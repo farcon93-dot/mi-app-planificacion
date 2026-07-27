@@ -116,12 +116,19 @@ if st.button("Consultar Estado Actual"):
                 """
                 
                 try:
-                    respuesta = modelo.generate_content(instruccion)
+                   respuesta = modelo.generate_content(instruccion)
                     st.info(respuesta.text)
                     
                     # Mostrar la tabla cruda abajo por si el usuario quiere verificar
                     with st.expander("Ver tabla original extraída del Excel"):
                         st.dataframe(datos_equipo)
+                        
+                except Exception as e:
+                    st.error(f"Hubo un error al conectar con Gemini (IA). Detalle técnico: {e}")
+
+st.divider()
+st.caption("Los datos se sincronizan automáticamente con SharePoint. (Próximamente: Integración con API)")
+```eof
                         
                 except Exception as e:
                     st.error("Hubo un error al conectar con Gemini (IA).")
