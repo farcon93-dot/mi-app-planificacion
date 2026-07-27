@@ -20,17 +20,18 @@ st.set_page_config(page_title="Copiloto de Equipos", layout="centered", page_ico
 def obtener_lista_modelos():
     genai.configure(api_key=GEMINI_API_KEY)
     try:
-        # Traemos todos los modelos de texto de Google
         modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        # Eliminamos específicamente el que te dio el error antes
-        modelos_seguros = [m for m in modelos if '2.5-flash' not in m]
+        # Eliminamos versiones inestables
+        modelos_seguros = [m for m in modelos if '2.5' not in m and 'vision' not in m]
         
-        # Añadimos los más estables al final como plan B
-        fallback = ["models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-pro"]
-        return modelos_seguros + fallback
+        # TRUCO DE VELOCIDAD: Forzamos a que pruebe primero los modelos "flash" (ultra rápidos)
+        flash_models = [m for m in modelos_seguros if 'flash' in m]
+        pro_models = [m for m in modelos_seguros if 'flash' not in m]
+        
+        return flash_models + pro_models + ["models/gemini-1.5-flash"]
     except Exception:
-        return ["models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-pro"]
+        return ["models/gemini-1.5-flash", "models/gemini-pro"]
 
 lista_modelos_seguros = obtener_lista_modelos()
 
@@ -44,7 +45,6 @@ def cargar_excel(url):
             id_archivo = url.split('/d/')[1].split('/')[0]
             url_descarga = f"https://drive.google.com/uc?export=download&id={id_archivo}"
             
-            # Extraemos TODAS las pestañas de una vez
             diccionario_hojas = pd.read_excel(url_descarga, sheet_name=None)
             df_combinado = pd.DataFrame()
             
@@ -67,7 +67,7 @@ def filtrar_por_equipo(df, nombre_equipo):
     return df[mask]
 
 # ==========================================
-# 4. INTERFAZ DE LA APLICACIÓN (Tu celular)
+# 4. INTERFAZ DE LA APLICACIÓN
 # ==========================================
 st.title("🚜 Copiloto de Equipos")
 st.markdown("Consulta el estado, ubicación y datos básicos de tus equipos.")
@@ -79,6 +79,7 @@ if st.button("Consultar Estado Actual"):
         st.warning("⚠️ Por favor, escribe un equipo para buscar.")
     else:
         with st.spinner(f'Analizando todas las pestañas del Excel buscando a {equipo_a_buscar}...'):
+            
             df_total, cant_hojas = cargar_excel(LINK_EXCEL)
             
             if df_total.empty:
@@ -96,26 +97,30 @@ if st.button("Consultar Estado Actual"):
                 st.success("🤖 Analizando historial y datos maestros con Inteligencia Artificial...")
                 
                 contexto = f"DATOS ENCONTRADOS:\n{datos_equipo.to_string()}\n"
+                
+                # INSTRUCCIÓN TIPO MÁQUINA (Cero libertad creativa)
                 instruccion = f"""
-                Eres un sistema automático que genera reportes directos. Tu única función es leer los datos del equipo '{equipo_a_buscar}' y rellenar la plantilla de abajo.
-                
-                REGLA ABSOLUTA Y ESTRICTA: Tu respuesta debe ser ÚNICAMENTE el texto de la plantilla completada. NO saludes, NO expliques lo que hiciste, NO escribas en inglés, y NO uses bloques de código. Empieza a escribir directamente desde el icono del tractor.
-                
+                ESTA ES UNA TAREA DE EXTRACCIÓN AUTOMÁTICA DE DATOS.
+                REGLAS ESTRICTAS:
+                1. NO expliques tu razonamiento. NO pienses en voz alta. NO uses inglés.
+                2. Copia EXACTAMENTE la plantilla de abajo y solo reemplaza los corchetes con la información del equipo '{equipo_a_buscar}'.
+                3. Si imprimes algo fuera de la plantilla, el sistema fallará.
+
                 🚜 1. Datos Básicos del Equipo:
-                - Marca y Modelo: [Extraer aquí]
-                - PPU: [Extraer aquí]
-                - Año: [Extraer aquí]
-                - VIN: [Extraer aquí]
+                - Marca y Modelo: [Extraer]
+                - PPU: [Extraer]
+                - Año: [Extraer]
+                - VIN: [Extraer]
                 
-                📅 2. Estado de Planificación y OT (El más reciente o próximo):
-                - Actividad: [Extraer aquí]
-                - Fecha Proyectada: [Extraer aquí]
-                - Estatus de OT: [Extraer aquí]
+                📅 2. Estado de Planificación y OT:
+                - Actividad: [Actividad con fecha más reciente o futura]
+                - Fecha Proyectada: [Extraer]
+                - Estatus de OT: [Extraer]
                 
                 📍 3. Ubicación y Faena:
-                - Faena actual reportada: [Extraer aquí]
+                - Faena actual reportada: [Extraer]
                 
-                DATOS EXCEL:
+                TABLA DE DATOS:
                 {contexto}
                 """
                 
@@ -124,11 +129,14 @@ if st.button("Consultar Estado Actual"):
                     modelo_exitoso = ""
                     ultimo_error = ""
                     
-                    # Probamos los modelos uno por uno hasta que responda
                     for nombre_modelo in lista_modelos_seguros:
                         try:
                             modelo_prueba = genai.GenerativeModel(nombre_modelo)
-                            respuesta = modelo_prueba.generate_content(instruccion)
+                            # TEMPERATURA 0: Convierte a la IA en un robot directo y sin imaginación
+                            respuesta = modelo_prueba.generate_content(
+                                instruccion,
+                                generation_config={"temperature": 0.0}
+                            )
                             modelo_exitoso = nombre_modelo
                             break 
                         except Exception as error_modelo:
@@ -137,13 +145,13 @@ if st.button("Consultar Estado Actual"):
                     
                     if respuesta:
                         st.info(respuesta.text)
-                        st.caption(f"✨ Análisis generado exitosamente usando: {modelo_exitoso}")
+                        st.caption(f"✨ Análisis generado exitosamente usando: {modelo_exitoso} (Modo Rápido)")
                         
                         with st.expander("Ver tabla original extraída del Excel"):
                             st.dataframe(datos_equipo)
                     else:
-                        st.error("Todos los modelos de Inteligencia Artificial fallaron.")
-                        st.caption(f"🔧 Último error registrado: {ultimo_error}")
+                        st.error("Todos los modelos fallaron.")
+                        st.caption(f"🔧 Último error: {ultimo_error}")
                         
                 except Exception as e:
                     st.error(f"Hubo un error inesperado. Detalle técnico: {e}")
