@@ -5,15 +5,10 @@ import google.generativeai as genai
 # ==========================================
 # 1. CONFIGURACIÓN DE TUS ENLACES Y CLAVES
 # ==========================================
-
-# En lugar de pegar la clave aquí, le decimos que la busque en la "Caja Fuerte" de Streamlit
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"] 
 
-# Pega aquí los links de "Cualquier persona con el enlace" de tus 3 Excel en Google Drive
-# Si por ahora solo tienes 1, pega el mismo link en los 3 para que no de error.
-LINK_EXCEL_1 = "https://docs.google.com/spreadsheets/d/1PUlnTUm_CpkvrpVoKJN_3nyD9khxITDV/edit?usp=drive_link&ouid=112672268024787990541&rtpof=true&sd=true"
-LINK_EXCEL_2 = "https://docs.google.com/spreadsheets/d/1PUlnTUm_CpkvrpVoKJN_3nyD9khxITDV/edit?usp=drive_link&ouid=112672268024787990541&rtpof=true&sd=true"
-LINK_EXCEL_3 = "https://docs.google.com/spreadsheets/d/1PUlnTUm_CpkvrpVoKJN_3nyD9khxITDV/edit?usp=drive_link&ouid=112672268024787990541&rtpof=true&sd=true"
+# Ahora solo usamos UN link principal, el tuyo.
+LINK_EXCEL = "https://docs.google.com/spreadsheets/d/1PUlnTUm_CpkvrpVoKJN_3nyD9khxITDV/edit?usp=sharing"
 
 # ==========================================
 # 2. CONFIGURACIÓN INICIAL
@@ -25,85 +20,96 @@ modelo = genai.GenerativeModel('gemini-1.5-flash')
 # ==========================================
 # 3. FUNCIONES INTELIGENTES (El Motor)
 # ==========================================
-# Le quitamos la memoria caché temporalmente y le agregamos "Rayos X"
-def cargar_excel(url, nombre):
+@st.cache_data(ttl=600) # Guarda en memoria por 10 minutos para ser rapidísimo
+def cargar_excel(url):
     if not url or "AQUÍ" in url:
         return pd.DataFrame()
         
     try:
-        # Truco para que Python descargue el Excel directo de Drive
         if "/d/" in url:
             id_archivo = url.split('/d/')[1].split('/')[0]
             url_descarga = f"https://drive.google.com/uc?export=download&id={id_archivo}"
-            df = pd.read_excel(url_descarga)
-            st.success(f"✅ {nombre} conectado. Se leyeron {len(df)} filas.")
-            return df
+            
+            # EL SÚPER PODER: sheet_name=None obliga a leer TODAS las pestañas
+            diccionario_hojas = pd.read_excel(url_descarga, sheet_name=None)
+            
+            df_combinado = pd.DataFrame()
+            
+            # Unimos todas las pestañas en una sola gran tabla
+            for nombre_hoja, df_hoja in diccionario_hojas.items():
+                df_hoja['Pestaña_Origen'] = nombre_hoja # Marca de agua para saber de dónde viene
+                df_combinado = pd.concat([df_combinado, df_hoja], ignore_index=True)
+                
+            # Limpiamos los datos para que el buscador no falle por espacios invisibles
+            df_combinado = df_combinado.dropna(how='all') 
+            
+            return df_combinado, len(diccionario_hojas)
         else:
-            st.warning(f"⚠️ El enlace de {nombre} no es válido: {url}")
-            return pd.DataFrame()
+            return pd.DataFrame(), 0
     except Exception as e:
-        st.error(f"❌ Error interno leyendo {nombre}. Detalle: {e}")
-        return pd.DataFrame()
+        st.error(f"❌ Error leyendo el Excel. Detalle: {e}")
+        return pd.DataFrame(), 0
 
 def filtrar_por_equipo(df, nombre_equipo):
     if df.empty: return df
-    # Busca el nombre del equipo en CUALQUIER columna del Excel
-    mask = df.astype(str).apply(lambda x: x.str.contains(nombre_equipo, case=False, na=False)).any(axis=1)
+    
+    # Busca ignorando mayúsculas, minúsculas y espacios extra
+    termino = str(nombre_equipo).strip().lower()
+    
+    # Busca en todas las columnas
+    mask = df.astype(str).apply(lambda x: x.str.lower().str.contains(termino, na=False)).any(axis=1)
     return df[mask]
 
 # ==========================================
 # 4. INTERFAZ DE LA APLICACIÓN (Tu celular)
 # ==========================================
 st.title("🚜 Copiloto de Equipos")
-st.markdown("Consulta el estado y ubicación más reciente de tus equipos.")
+st.markdown("Consulta el estado, ubicación y datos básicos de tus equipos.")
 
 # Buscador principal
-equipo_a_buscar = st.text_input("🔍 Ingresa el nombre o código del equipo (Ej: Camión 12, CA-101):")
+equipo_a_buscar = st.text_input("🔍 Ingresa el nombre o código del equipo (Ej: Quadra-1049, Auger-165):")
 
 if st.button("Consultar Estado Actual"):
     if not equipo_a_buscar:
         st.warning("⚠️ Por favor, escribe un equipo para buscar.")
     else:
-        with st.spinner(f'Buscando a {equipo_a_buscar} en los registros...'):
-            # 1. Cargamos los 3 Excels con la función de Rayos X
-            df1 = cargar_excel(LINK_EXCEL_1, "Excel 1")
-            df2 = cargar_excel(LINK_EXCEL_2, "Excel 2")
-            df3 = cargar_excel(LINK_EXCEL_3, "Excel 3")
+        with st.spinner(f'Analizando todas las pestañas del Excel buscando a {equipo_a_buscar}...'):
             
+            # 1. Cargamos el Excel completo (Todas las hojas)
+            df_total, cant_hojas = cargar_excel(LINK_EXCEL)
+            
+            if df_total.empty:
+                st.stop() # Se detiene si hubo un error al cargar
+                
             # 2. Filtramos solo lo que importa de ese equipo
-            filtro1 = filtrar_por_equipo(df1, equipo_a_buscar)
-            filtro2 = filtrar_por_equipo(df2, equipo_a_buscar)
-            filtro3 = filtrar_por_equipo(df3, equipo_a_buscar)
-            
-            total_filas = len(filtro1) + len(filtro2) + len(filtro3)
+            datos_equipo = filtrar_por_equipo(df_total, equipo_a_buscar)
             
             # Radiografía del filtro
-            st.info(f"🔍 Rayos X: El buscador encontró {len(filtro1)} coincidencias en Excel 1, {len(filtro2)} en Excel 2, y {len(filtro3)} en Excel 3.")
+            st.success(f"✅ Conectado a Drive. Se revisaron {cant_hojas} pestañas y {len(df_total)} filas en total.")
+            st.info(f"🔍 Se encontraron {len(datos_equipo)} registros para el equipo '{equipo_a_buscar}'.")
             
-            if total_filas == 0:
-                st.error(f"No se encontró información reciente para el equipo: {equipo_a_buscar}")
+            if len(datos_equipo) == 0:
+                st.error(f"No se encontró ninguna coincidencia exacta para: {equipo_a_buscar}")
+                st.caption("Tip: Intenta buscar solo el número (Ej: 1049 en vez de Quadra-1049)")
             else:
-                # 3. Le pasamos la info filtrada a la IA
-                st.success(f"✅ Se encontraron registros. Analizando el estado más reciente...")
+                # 3. Le pasamos la info a la IA
+                st.success("🤖 Analizando historial y datos maestros con Inteligencia Artificial...")
                 
-                contexto = f"""
-                DATOS EXCEL 1:\n{filtro1.to_string()}\n
-                DATOS EXCEL 2:\n{filtro2.to_string()}\n
-                DATOS EXCEL 3:\n{filtro3.to_string()}
-                """
+                contexto = f"DATOS ENCONTRADOS:\n{datos_equipo.to_string()}\n"
                 
                 instruccion = f"""
-                Eres un analista de mantenimiento y planificación de equipos pesados.
+                Eres un analista experto en mantenimiento y planificación de equipos pesados en la minería.
                 El usuario preguntó por el equipo: '{equipo_a_buscar}'.
                 
-                Aquí tienes todas las filas donde aparece ese equipo en nuestros registros de Excel.
-                IMPORTANTE: Ignora el historial antiguo (como mantenciones del año pasado). 
-                Concéntrate en deducir:
-                1. ¿Cuál es su estado más actual (Operativo, En Taller, Detenido, etc.)?
-                2. ¿Cuál es su ubicación actual reportada?
-                3. ¿Hay algún comentario o alerta reciente que debamos saber?
+                Aquí tienes TODAS las filas donde aparece ese equipo cruzando distintas pestañas del Excel.
+                La columna 'Pestaña_Origen' te dice de qué hoja viene la información (Ej: Base de Datos, Planificación, Historial).
                 
-                Responde de forma muy directa, clara y en viñetas para que sea fácil de leer en un celular.
+                Concéntrate en deducir y resumir esto:
+                1. Datos Básicos del Equipo (Si hay información de la base de datos).
+                2. ¿Cuál es su estado más actual de planificación y estatus de OT?
+                3. ¿Cuál es su ubicación actual o faena reportada?
+                
+                Ignora información vieja irrelevante. Responde de forma muy directa, clara, profesional y en viñetas para que sea fácil de leer en un celular.
                 
                 DATOS DE RESPALDO:
                 {contexto}
@@ -112,8 +118,13 @@ if st.button("Consultar Estado Actual"):
                 try:
                     respuesta = modelo.generate_content(instruccion)
                     st.info(respuesta.text)
+                    
+                    # Mostrar la tabla cruda abajo por si el usuario quiere verificar
+                    with st.expander("Ver tabla original extraída del Excel"):
+                        st.dataframe(datos_equipo)
+                        
                 except Exception as e:
-                    st.error("Hubo un error al conectar con la Inteligencia Artificial.")
+                    st.error("Hubo un error al conectar con Gemini (IA).")
 
 st.divider()
 st.caption("Los datos se sincronizan automáticamente con SharePoint. (Próximamente: Integración con API)")
