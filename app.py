@@ -23,7 +23,7 @@ modelo = genai.GenerativeModel('gemini-1.5-flash')
 @st.cache_data(ttl=600) # Guarda en memoria por 10 minutos para ser rapidísimo
 def cargar_excel(url):
     if not url or "AQUÍ" in url:
-        return pd.DataFrame()
+        return pd.DataFrame(), 0
         
     try:
         if "/d/" in url:
@@ -116,7 +116,7 @@ if st.button("Consultar Estado Actual"):
                 """
                 
                 try:
-                   respuesta = modelo.generate_content(instruccion)
+                    respuesta = modelo.generate_content(instruccion)
                     st.info(respuesta.text)
                     
                     # Mostrar la tabla cruda abajo por si el usuario quiere verificar
@@ -125,13 +125,6 @@ if st.button("Consultar Estado Actual"):
                         
                 except Exception as e:
                     st.error(f"Hubo un error al conectar con Gemini (IA). Detalle técnico: {e}")
-
-st.divider()
-st.caption("Los datos se sincronizan automáticamente con SharePoint. (Próximamente: Integración con API)")
-```eof
-                        
-                except Exception as e:
-                    st.error("Hubo un error al conectar con Gemini (IA).")
 
 st.divider()
 st.caption("Los datos se sincronizan automáticamente con SharePoint. (Próximamente: Integración con API)")
