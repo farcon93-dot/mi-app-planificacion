@@ -6,8 +6,8 @@ import google.generativeai as genai
 # 1. CONFIGURACIÓN DE TUS ENLACES Y CLAVES
 # ==========================================
 
-# Pega aquí tu clave gratuita de Google Gemini (Sácala en aistudio.google.com)
-GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]  
+# En lugar de pegar la clave aquí, le decimos que la busque en la "Caja Fuerte" de Streamlit
+GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"] 
 
 # Pega aquí los links de "Cualquier persona con el enlace" de tus 3 Excel en Google Drive
 # Si por ahora solo tienes 1, pega el mismo link en los 3 para que no de error.
@@ -33,8 +33,11 @@ def cargar_excel(url):
             id_archivo = url.split('/d/')[1].split('/')[0]
             url_descarga = f"https://drive.google.com/uc?export=download&id={id_archivo}"
             return pd.read_excel(url_descarga)
-        return pd.DataFrame()
+        else:
+            st.warning(f"⚠️ El enlace no tiene el formato esperado: {url}")
+            return pd.DataFrame()
     except Exception as e:
+        st.error(f"❌ Error leyendo un Excel: {e}")
         return pd.DataFrame()
 
 def filtrar_por_equipo(df, nombre_equipo):
