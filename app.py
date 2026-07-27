@@ -15,7 +15,7 @@ LINK_EXCEL = "https://docs.google.com/spreadsheets/d/1PUlnTUm_CpkvrpVoKJN_3nyD9k
 # ==========================================
 st.set_page_config(page_title="Copiloto de Equipos", layout="centered", page_icon="🚜")
 genai.configure(api_key=GEMINI_API_KEY)
-modelo = genai.GenerativeModel('gemini-1.5-flash')
+modelo = genai.GenerativeModel('gemini-pro')
 
 # ==========================================
 # 3. FUNCIONES INTELIGENTES (El Motor)
