@@ -17,29 +17,23 @@ st.set_page_config(page_title="Copiloto de Equipos", layout="centered", page_ico
 # 3. FUNCIONES INTELIGENTES (El Motor)
 # ==========================================
 @st.cache_resource
-def obtener_modelo_ia():
+def obtener_lista_modelos():
     genai.configure(api_key=GEMINI_API_KEY)
-    modelo_elegido = 'gemini-1.5-flash' # Modelo por defecto
     try:
-        # Le preguntamos a Google qué modelos existen para esta clave
-        modelos_disponibles = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        # Traemos todos los modelos de texto de Google
+        modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         
-        # Buscamos el mejor disponible en orden de prioridad
-        if "models/gemini-1.5-flash" in modelos_disponibles:
-            modelo_elegido = "models/gemini-1.5-flash"
-        elif "models/gemini-1.5-pro" in modelos_disponibles:
-            modelo_elegido = "models/gemini-1.5-pro"
-        elif "models/gemini-1.0-pro" in modelos_disponibles:
-            modelo_elegido = "models/gemini-1.0-pro"
-        elif len(modelos_disponibles) > 0:
-            modelo_elegido = modelos_disponibles[0] # Usar el primero que funcione
-            
-        return genai.GenerativeModel(modelo_elegido), modelo_elegido
+        # Eliminamos específicamente el que te dio el error (2.5-flash)
+        modelos_seguros = [m for m in modelos if '2.5-flash' not in m]
+        
+        # Por si acaso, añadimos los más estables al final como plan B
+        fallback = ["models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-pro"]
+        return modelos_seguros + fallback
     except Exception:
-        return genai.GenerativeModel(modelo_elegido), modelo_elegido
+        return ["models/gemini-1.5-flash", "models/gemini-1.5-pro", "models/gemini-pro"]
 
-# Obtenemos la IA lista para usar
-modelo, nombre_modelo_usado = obtener_modelo_ia()
+# Obtenemos la lista de modelos lista para usar
+lista_modelos_seguros = obtener_lista_modelos()
 
 @st.cache_data(ttl=600)
 def cargar_excel(url):
@@ -121,15 +115,33 @@ if st.button("Consultar Estado Actual"):
                 """
                 
                 try:
-                    respuesta = modelo.generate_content(instruccion)
-                    st.info(respuesta.text)
+                    respuesta = None
+                    modelo_exitoso = ""
+                    ultimo_error = ""
                     
-                    with st.expander("Ver tabla original extraída del Excel"):
-                        st.dataframe(datos_equipo)
+                    # MODO BLINDADO: Probamos los modelos uno por uno hasta que Google acepte uno
+                    for nombre_modelo in lista_modelos_seguros:
+                        try:
+                            modelo_prueba = genai.GenerativeModel(nombre_modelo)
+                            respuesta = modelo_prueba.generate_content(instruccion)
+                            modelo_exitoso = nombre_modelo
+                            break # Si funcionó, rompemos el ciclo y avanzamos felices
+                        except Exception as error_modelo:
+                            ultimo_error = str(error_modelo)
+                            continue # Si falló, pasamos al siguiente modelo de la lista en milisegundos
+                    
+                    if respuesta:
+                        st.info(respuesta.text)
+                        st.caption(f"✨ Análisis generado exitosamente usando: {modelo_exitoso}")
+                        
+                        with st.expander("Ver tabla original extraída del Excel"):
+                            st.dataframe(datos_equipo)
+                    else:
+                        st.error("Todos los modelos de Inteligencia Artificial fueron rechazados por Google.")
+                        st.caption(f"🔧 Último error registrado: {ultimo_error}")
                         
                 except Exception as e:
-                    st.error(f"Hubo un error al conectar con Gemini (IA). Detalle técnico: {e}")
-                    st.caption(f"🔧 Diagnóstico del sistema: La aplicación intentó usar el modelo '{nombre_modelo_usado}'.")
+                    st.error(f"Hubo un error inesperado. Detalle técnico: {e}")
 
 st.divider()
 st.caption("Los datos se sincronizan automáticamente con SharePoint.")
