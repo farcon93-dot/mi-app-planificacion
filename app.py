@@ -97,24 +97,25 @@ if st.button("Consultar Estado Actual"):
                 
                 contexto = f"DATOS ENCONTRADOS:\n{datos_equipo.to_string()}\n"
                 instruccion = f"""
-                Eres mi copiloto experto en planificación de mantenimiento de equipos pesados.
-                El usuario necesita un reporte rápido del equipo: '{equipo_a_buscar}'.
+                Eres un sistema automático que genera reportes directos. Tu única función es leer los datos del equipo '{equipo_a_buscar}' y rellenar la plantilla de abajo.
                 
-                REGLAS ESTRICTAS:
-                1. NO incluyas tu proceso de pensamiento. NO uses inglés.
-                2. Responde ÚNICAMENTE con el resultado final en español.
-                3. Ve directo al grano. Usa esta estructura exacta con emojis:
+                REGLA ABSOLUTA Y ESTRICTA: Tu respuesta debe ser ÚNICAMENTE el texto de la plantilla completada. NO saludes, NO expliques lo que hiciste, NO escribas en inglés, y NO uses bloques de código. Empieza a escribir directamente desde el icono del tractor.
                 
                 🚜 1. Datos Básicos del Equipo:
-                - (Extrae marca, modelo, PPU, año, VIN, etc. de la Base de Datos).
+                - Marca y Modelo: [Extraer aquí]
+                - PPU: [Extraer aquí]
+                - Año: [Extraer aquí]
+                - VIN: [Extraer aquí]
                 
-                📅 2. Estado de Planificación y OT:
-                - (Indica la actividad más reciente/próxima a realizar, fecha proyectada y estatus de la OT).
+                📅 2. Estado de Planificación y OT (El más reciente o próximo):
+                - Actividad: [Extraer aquí]
+                - Fecha Proyectada: [Extraer aquí]
+                - Estatus de OT: [Extraer aquí]
                 
                 📍 3. Ubicación y Faena:
-                - (Indica la ubicación actual o faena reportada más reciente).
+                - Faena actual reportada: [Extraer aquí]
                 
-                DATOS DE RESPALDO EXTRAÍDOS DEL EXCEL:
+                DATOS EXCEL:
                 {contexto}
                 """
                 
@@ -136,12 +137,12 @@ if st.button("Consultar Estado Actual"):
                     
                     if respuesta:
                         st.info(respuesta.text)
-                        st.caption(f"✨ Análisis generado rapidísimo usando: {modelo_exitoso}")
+                        st.caption(f"✨ Análisis generado exitosamente usando: {modelo_exitoso}")
                         
                         with st.expander("Ver tabla original extraída del Excel"):
                             st.dataframe(datos_equipo)
                     else:
-                        st.error("Todos los modelos de Inteligencia Artificial fueron rechazados.")
+                        st.error("Todos los modelos de Inteligencia Artificial fallaron.")
                         st.caption(f"🔧 Último error registrado: {ultimo_error}")
                         
                 except Exception as e:
