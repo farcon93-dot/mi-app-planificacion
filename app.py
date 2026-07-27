@@ -25,19 +25,24 @@ modelo = genai.GenerativeModel('gemini-1.5-flash')
 # ==========================================
 # 3. FUNCIONES INTELIGENTES (El Motor)
 # ==========================================
-@st.cache_data(ttl=300) # Se actualiza cada 5 minutos
-def cargar_excel(url):
+# Le quitamos la memoria caché temporalmente y le agregamos "Rayos X"
+def cargar_excel(url, nombre):
+    if not url or "AQUÍ" in url:
+        return pd.DataFrame()
+        
     try:
         # Truco para que Python descargue el Excel directo de Drive
         if "/d/" in url:
             id_archivo = url.split('/d/')[1].split('/')[0]
             url_descarga = f"https://drive.google.com/uc?export=download&id={id_archivo}"
-            return pd.read_excel(url_descarga)
+            df = pd.read_excel(url_descarga)
+            st.success(f"✅ {nombre} conectado. Se leyeron {len(df)} filas.")
+            return df
         else:
-            st.warning(f"⚠️ El enlace no tiene el formato esperado: {url}")
+            st.warning(f"⚠️ El enlace de {nombre} no es válido: {url}")
             return pd.DataFrame()
     except Exception as e:
-        st.error(f"❌ Error leyendo un Excel: {e}")
+        st.error(f"❌ Error interno leyendo {nombre}. Detalle: {e}")
         return pd.DataFrame()
 
 def filtrar_por_equipo(df, nombre_equipo):
@@ -60,10 +65,10 @@ if st.button("Consultar Estado Actual"):
         st.warning("⚠️ Por favor, escribe un equipo para buscar.")
     else:
         with st.spinner(f'Buscando a {equipo_a_buscar} en los registros...'):
-            # 1. Cargamos los 3 Excels
-            df1 = cargar_excel(LINK_EXCEL_1)
-            df2 = cargar_excel(LINK_EXCEL_2)
-            df3 = cargar_excel(LINK_EXCEL_3)
+            # 1. Cargamos los 3 Excels con la función de Rayos X
+            df1 = cargar_excel(LINK_EXCEL_1, "Excel 1")
+            df2 = cargar_excel(LINK_EXCEL_2, "Excel 2")
+            df3 = cargar_excel(LINK_EXCEL_3, "Excel 3")
             
             # 2. Filtramos solo lo que importa de ese equipo
             filtro1 = filtrar_por_equipo(df1, equipo_a_buscar)
@@ -71,6 +76,9 @@ if st.button("Consultar Estado Actual"):
             filtro3 = filtrar_por_equipo(df3, equipo_a_buscar)
             
             total_filas = len(filtro1) + len(filtro2) + len(filtro3)
+            
+            # Radiografía del filtro
+            st.info(f"🔍 Rayos X: El buscador encontró {len(filtro1)} coincidencias en Excel 1, {len(filtro2)} en Excel 2, y {len(filtro3)} en Excel 3.")
             
             if total_filas == 0:
                 st.error(f"No se encontró información reciente para el equipo: {equipo_a_buscar}")
