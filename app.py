@@ -7,7 +7,13 @@ from datetime import datetime
 # 1. CONFIGURACIÓN DE TUS ENLACES Y CLAVES
 # ==========================================
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"] 
-LINK_EXCEL = "https://docs.google.com/spreadsheets/d/1PUlnTUm_CpkvrpVoKJN_3nyD9khxITDV/edit?usp=sharing"
+
+# AQUÍ PONES TUS LINKS: Puedes agregar 2, 3 o 10 links. Solo sepáralos con comas.
+ENLACES_EXCEL = [
+    "https://docs.google.com/spreadsheets/d/1PUlnTUm_CpkvrpVoKJN_3nyD9khxITDV/edit?usp=sharing", # 1. Tu Planificación actual
+    "https://docs.google.com/spreadsheets/d/1VrDHEb-D7oeypyYdhUpd3_tw_jggTu3K/edit?usp=drive_link&ouid=112672268024787990541&rtpof=true&sd=true", # 2. Tu Base de Datos / Histórico (Reemplaza este texto)
+    "PEGA_AQUI_EL_LINK_DE_TU_TERCER_EXCEL"   # 3. Otro archivo (Reemplaza este texto, o borra esta línea si no tienes 3)
+]
 
 st.set_page_config(page_title="Copiloto de Equipos", layout="centered", page_icon="🚜")
 
@@ -34,32 +40,34 @@ def obtener_lista_modelos():
 lista_modelos_seguros = obtener_lista_modelos()
 
 @st.cache_data(ttl=600) 
-def cargar_excel(url):
-    """Descarga el Excel de Drive y lee TODAS las pestañas combinándolas"""
-    if not url or "AQUÍ" in url:
-        return pd.DataFrame(), 0
-        
-    try:
-        if "/d/" in url:
-            id_archivo = url.split('/d/')[1].split('/')[0]
-            url_descarga = f"https://drive.google.com/uc?export=download&id={id_archivo}"
+def cargar_multiples_excel(lista_urls):
+    """Descarga múltiples Excel de Drive y lee TODAS las pestañas combinándolas en una Súper Tabla"""
+    df_maestro = pd.DataFrame()
+    total_hojas = 0
+    archivos_leidos = 0
+    
+    for i, url in enumerate(lista_urls):
+        if not url or "PEGA_AQUI" in url:
+            continue # Salta los links vacíos
             
-            # sheet_name=None obliga a Pandas a leer el libro entero
-            diccionario_hojas = pd.read_excel(url_descarga, sheet_name=None)
-            df_combinado = pd.DataFrame()
-            
-            # Combinamos las hojas dejando una "marca de agua" de su origen
-            for nombre_hoja, df_hoja in diccionario_hojas.items():
-                df_hoja['Pestaña_Origen'] = nombre_hoja
-                df_combinado = pd.concat([df_combinado, df_hoja], ignore_index=True)
+        try:
+            if "/d/" in url:
+                id_archivo = url.split('/d/')[1].split('/')[0]
+                url_descarga = f"https://drive.google.com/uc?export=download&id={id_archivo}"
                 
-            df_combinado = df_combinado.dropna(how='all') 
-            return df_combinado, len(diccionario_hojas)
-        else:
-            return pd.DataFrame(), 0
-    except Exception as e:
-        st.error(f"❌ Error leyendo el Excel. Detalle: {e}")
-        return pd.DataFrame(), 0
+                diccionario_hojas = pd.read_excel(url_descarga, sheet_name=None)
+                archivos_leidos += 1
+                total_hojas += len(diccionario_hojas)
+                
+                for nombre_hoja, df_hoja in diccionario_hojas.items():
+                    # Etiqueta de origen (Ej: Doc 1 (BaseDatos)) para que la IA sepa de dónde viene el dato
+                    df_hoja['Pestaña_Origen'] = f"Doc {archivos_leidos} ({nombre_hoja})"
+                    df_maestro = pd.concat([df_maestro, df_hoja], ignore_index=True)
+        except Exception as e:
+            st.warning(f"⚠️ No se pudo leer el archivo {i+1}. Verifica que el link tenga permisos de lectura.")
+            
+    df_maestro = df_maestro.dropna(how='all') 
+    return df_maestro, total_hojas, archivos_leidos
 
 def filtrar_por_equipo(df, nombre_equipo):
     """Busca el equipo en cualquier columna, ignorando mayúsculas y espacios"""
@@ -80,16 +88,18 @@ if st.button("Consultar Estado Actual"):
     if not equipo_a_buscar:
         st.warning("⚠️ Por favor, escribe un equipo para buscar.")
     else:
-        with st.spinner(f'Analizando todas las pestañas del Excel buscando a {equipo_a_buscar}...'):
+        with st.spinner(f'Analizando TODAS las bases de datos buscando a {equipo_a_buscar}...'):
             
-            df_total, cant_hojas = cargar_excel(LINK_EXCEL)
+            # Llamamos a la nueva función que lee varios Excel
+            df_total, cant_hojas, cant_archivos = cargar_multiples_excel(ENLACES_EXCEL)
             
             if df_total.empty:
+                st.error("No se pudo cargar ningún dato. Revisa los links de tus Excel.")
                 st.stop()
                 
             datos_equipo = filtrar_por_equipo(df_total, equipo_a_buscar)
             
-            st.success(f"✅ Conectado a Drive. Se revisaron {cant_hojas} pestañas y {len(df_total)} filas en total.")
+            st.success(f"✅ Conectado a Drive. Se cruzó información de {cant_archivos} archivos Excel ({cant_hojas} pestañas y {len(df_total)} filas).")
             st.info(f"🔍 Se encontraron {len(datos_equipo)} registros para el equipo '{equipo_a_buscar}'.")
             
             if len(datos_equipo) == 0:
