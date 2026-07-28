@@ -17,7 +17,7 @@ except Exception:
 
 API_KEY_DASHBOARD = "CX92wBe9wV2NLUMyFE6PzvcyqTWyBPr5"
 
-# Tus dos enlaces maestros de Excel en Google Drive
+# Tus enlaces maestros de Excel en Google Drive (Actualizados por Power Automate)
 ENLACES_EXCEL = [
     "https://docs.google.com/spreadsheets/d/1PUlnTUm_CpkvrpVoKJN_3nyD9khxITDV/edit?usp=sharing",
     "https://docs.google.com/spreadsheets/d/1VrDHEb-D7oeypyYdhUpd3_tw_jggTu3K/edit?usp=drive_link&ouid=112672268024787990541&rtpof=true&sd=true"
@@ -120,7 +120,11 @@ with st.spinner("Sincronizando con el sistema central en tiempo real..."):
 
 # Formatear columnas básicas por si vienen vacías
 if not df_api_global.empty:
-    cols_necesarias = ['rev_fecha_expiracion', 'ser_fecha_expiracion', 'dgmn_fecha_expiracion', 'nombre', 'nombre_faena', 'nombre_zona', 'horas_ult', 'nombre_es', 'marca_nombre']
+    cols_necesarias = [
+        'rev_fecha_expiracion', 'ser_fecha_expiracion', 'dgmn_fecha_expiracion', 
+        'nombre', 'nombre_faena', 'nombre_zona', 'horas_ult', 'nombre_es', 
+        'marca_nombre', 'ultimo_estado', 'ultimo_lugar', 'control'
+    ]
     for col in cols_necesarias:
         if col not in df_api_global.columns:
             df_api_global[col] = None
@@ -141,9 +145,9 @@ with tab_alertas:
     if df_api_global.empty:
         st.warning("No se pudieron cargar los datos de la API para generar las alertas.")
     else:
+        # Calcular días restantes forzando UTC puro para evitar TypeError
         hoy = pd.Timestamp.utcnow().normalize()
         
-        # Calcular días restantes (forzando UTC para evitar TypeError)
         dias_rt = (pd.to_datetime(df_api_global['rev_fecha_expiracion'], errors='coerce', utc=True).dt.normalize() - hoy).dt.days
         dias_sngm = (pd.to_datetime(df_api_global['ser_fecha_expiracion'], errors='coerce', utc=True).dt.normalize() - hoy).dt.days
         dias_dgmn = (pd.to_datetime(df_api_global['dgmn_fecha_expiracion'], errors='coerce', utc=True).dt.normalize() - hoy).dt.days
@@ -178,7 +182,6 @@ with tab_alertas:
                 estado = "🔥 VENCIDO" if row['Dias'] < 0 else f"Quedan {int(row['Dias'])} días"
                 st.markdown(f"**{row['nombre']}** ({row['nombre_faena']})  \n*{estado}*")
 
-
 # ---------------------------------------------------------
 # PESTAÑA 2: BÚSQUEDA Y AUDITORÍA DE EQUIPOS
 # ---------------------------------------------------------
@@ -192,7 +195,7 @@ with tab_equipos:
         else:
             with st.spinner(f'Extrayendo datos de Drive y cruzando con API en vivo para {equipo_a_buscar}...'):
                 
-                # 1. Leer Excels de Drive (Solo al hacer clic)
+                # 1. Leer Excels de Drive
                 df_excel, cant_hojas, cant_archivos = cargar_multiples_excel(ENLACES_EXCEL)
                 datos_excel = filtrar_por_equipo(df_excel, equipo_a_buscar)
                 
@@ -227,8 +230,8 @@ with tab_equipos:
                     - Marca y Modelo: [Extraer]
                     - PPU: [Extraer]
                     - Año / VIN: [Extraer]
-                    - Sistema de Control: [Extraer del campo 'control' en la API o Excel]
-                    - Capacidades: [Extraer si aparece en la base de datos]
+                    - Sistema de Control: [Extraer del campo 'control' en la API o en el Excel]
+                    - Capacidades: [Extraer si aparece detallado en la base de datos Excel]
                     
                     📅 2. Estado de Planificación y OT (Cruce Cronológico):
                     - Situación real a hoy ({fecha_actual}): [Deducir si está en faena o en taller basado en fechas]
@@ -236,11 +239,12 @@ with tab_equipos:
                     
                     📍 3. Ubicación y Auditoría de Congruencia:
                     - Ubicación según Excel (Manual): [Extraer Faena/Ubicación de los Excels]
-                    - Ubicación según Sistema (API): [Extraer 'nombre_faena' y 'nombre_zona' de la API]
-                    - ⚠️ Alerta de Congruencia: [Compara ambas ubicaciones. Si coinciden o son razonablemente la misma, escribe "✅ Sistemas congruentes". Si son diferentes (ej. Excel dice Chuquicamata y API dice Pelambres), escribe "❌ INCONGRUENCIA DETECTADA: El sistema vivo indica una ubicación distinta al registro manual. Revisar."]
+                    - Ubicación según Sistema (API): [Extraer 'ultimo_lugar' o 'nombre_faena' de la API]
+                    - ⚠️ Alerta de Congruencia: [Compara ambas ubicaciones. Si coinciden o son lógicamente compatibles, escribe "✅ Sistemas congruentes". Si son diferentes (ej. Excel dice Chuquicamata y API dice Pelambres), escribe "❌ INCONGRUENCIA DETECTADA: El sistema vivo indica una ubicación distinta al registro manual. Recomendación: Actualizar Excel."]
                     
                     🛡️ 4. Cumplimiento y Horómetro (Datos en Vivo API):
-                    - Horómetro Actual (horas_ult): [Extraer de API]
+                    - Estado Actual del Camión: [Extraer de 'ultimo_estado' en la API (ej: OK, CATASTROFICO, ALERTA 1)]
+                    - Horómetro Actual: [Extraer 'horas_ult' de API] hrs
                     - Vencimiento Revisión Técnica (RT): [Extraer 'rev_fecha_expiracion' de API]
                     - Vencimiento Sernageomin: [Extraer 'ser_fecha_expiracion' de API]
                     - Vencimiento DGMN: [Extraer 'dgmn_fecha_expiracion' de API]
@@ -300,9 +304,9 @@ with tab_faenas:
             cols_vista = {
                 'nombre': 'Equipo',
                 'marca_nombre': 'Marca',
-                'nombre_zona': 'Zona/Ubicación',
+                'ultimo_lugar': 'Lugar/Ubicación',
                 'horas_ult': 'Horómetro (hrs)',
-                'nombre_es': 'Estado Actual',
+                'ultimo_estado': 'Estado Actual',
                 'rev_fecha_expiracion': 'Venc. RT',
                 'ser_fecha_expiracion': 'Venc. SNGM',
                 'dgmn_fecha_expiracion': 'Venc. DGMN'
@@ -316,8 +320,8 @@ with tab_faenas:
             columnas_fechas = ['Venc. RT', 'Venc. SNGM', 'Venc. DGMN']
             for col in columnas_fechas:
                 if col in df_mostrar.columns:
-                    # Convertir a fecha y formatear a YYYY-MM-DD (ej: 2026-12-06)
-                    df_mostrar[col] = pd.to_datetime(df_mostrar[col], errors='coerce').dt.strftime('%Y-%m-%d')
+                    # Convertir a fecha y formatear a DD/MM/YYYY (ej: 06/12/2026)
+                    df_mostrar[col] = pd.to_datetime(df_mostrar[col], errors='coerce').dt.strftime('%d/%m/%Y')
             
             # Rellenar los valores nulos o "None" por un guión para limpiar la vista
             df_mostrar = df_mostrar.fillna("-")
@@ -330,4 +334,4 @@ with tab_faenas:
             )
 
 st.divider()
-st.caption("Sistema Centralizado de Planificación y Cumplimiento v3.0 | Sincronización en tiempo real")
+st.caption("Sistema Centralizado de Planificación y Cumplimiento v4.0 | Sincronización en tiempo real")
