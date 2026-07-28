@@ -15,14 +15,16 @@ try:
 except Exception:
     GEMINI_API_KEY = "PEGA_TU_KEY_DE_GEMINI_AQUI_SI_NO_USAS_SECRETS"
 
+# API del Sistema de Planificación
 API_KEY_DASHBOARD = "CX92wBe9wV2NLUMyFE6PzvcyqTWyBPr5"
 
+# Tus Excels
 ENLACES_EXCEL = [
     "https://docs.google.com/spreadsheets/d/1PUlnTUm_CpkvrpVoKJN_3nyD9khxITDV/edit?usp=sharing",
     "https://docs.google.com/spreadsheets/d/1VrDHEb-D7oeypyYdhUpd3_tw_jggTu3K/edit?usp=drive_link&ouid=112672268024787990541&rtpof=true&sd=true"
 ]
 
-# Diccionario Global de Contratos
+# Diccionario Global de Contratos (Estático y Ultrarrápido)
 CONTRATOS_FAENA = {
     "Centinela": {"Segmento": 1, "Contrato": 13, "Back Up": 3},
     "Collahuasi": {"Segmento": 1, "Contrato": 6, "Back Up": 2},
@@ -122,12 +124,54 @@ def filtrar_por_equipo(df, nombre_equipo):
     mask = df.astype(str).apply(lambda x: x.str.lower().str.contains(termino, na=False)).any(axis=1)
     return df[mask]
 
+@st.cache_data(ttl=3600) # Se actualiza cada hora para no ralentizar la app
+def analizar_movimientos_semana(df_excel, fecha_str, modelos):
+    if df_excel.empty: return "No hay datos de planificación disponibles."
+    
+    # Filtrar solo las hojas que nos interesan para no saturar a la IA
+    mask = df_excel['Origen_Datos'].astype(str).str.contains('proceso|mov. equipos', case=False, na=False)
+    df_subset = df_excel[mask].dropna(how='all', axis=1).dropna(how='all', axis=0)
+    
+    # Convertir a texto para la IA (limitado a 250k caracteres para seguridad)
+    csv_data = df_subset.to_csv(index=False)[:250000] 
+    
+    instruccion = f"""
+    Eres el Ingeniero de Control de Flota Minera. Hoy es {fecha_str}.
+    Tu tarea es analizar la siguiente tabla extraída de las pestañas 'En proceso' (Talleres) y 'mov. equipos' (Carta Gantt).
+    
+    OBJETIVO: Identificar qué camiones se mueven ESTA SEMANA.
+    
+    Reglas estrictas:
+    1. 🟢 SUBEN A FAENA: Busca en los datos la columna que indique 'fecha de entrega' (o similar). Si la fecha de entrega al cliente cae dentro de esta semana (lunes a domingo actuales), añádelo a la lista.
+    2. 🔴 BAJAN A TALLER: Busca en los datos correspondientes a 'mov. equipos' (que es una Carta Gantt). Las fechas en las Gantt suelen estar en las cabeceras de las columnas. Identifica qué equipos tienen programada o marcada su bajada de la mina para esta semana.
+    
+    Formato de respuesta deseado:
+    ### 🟢 Equipos que SUBEN a Faena esta semana
+    * **[Nombre Equipo]**: [Fecha] - [Comentario de estado o destino si aparece]
+    
+    ### 🔴 Equipos que BAJAN de Faena esta semana
+    * **[Nombre Equipo]**: [Fecha programada] - [Faena de origen si aparece]
+    
+    Si luego de analizar toda la tabla no encuentras movimientos para esta semana en alguna categoría, escribe claramente "Ningún movimiento detectado para esta semana." bajo la categoría correspondiente. No agregues explicaciones extras, sé directo.
+    
+    TABLA DE DATOS PARA ANALIZAR:
+    {csv_data}
+    """
+    
+    try:
+        modelo_usar = modelos[-1] if modelos else "models/gemini-1.5-flash"
+        modelo = genai.GenerativeModel(modelo_usar)
+        respuesta = modelo.generate_content(instruccion, generation_config={"temperature": 0.1})
+        return respuesta.text
+    except Exception as e:
+        return f"⚠️ No se pudo generar el resumen semanal con IA. Los servidores pueden estar ocupados. Error: {e}"
+
 # ==========================================
-# 3. INTERFAZ Y PRECARGA DE DATOS
+# 3. INTERFAZ Y PRECARGA DE DATOS (CACHÉ)
 # ==========================================
 st.title("🚜 Centro de Control: Flota y Auditoría")
 
-with st.spinner("Sincronizando Sistema Vivo y Bases de Excel... (Esto toma unos segundos la primera vez)"):
+with st.spinner("Sincronizando Sistema Vivo y Bases de Excel... (Solo toma unos segundos)"):
     df_api_global = extraer_datos_api_paralelo()
     df_excel_global, cant_hojas, cant_archivos = cargar_multiples_excel(ENLACES_EXCEL)
 
@@ -156,7 +200,7 @@ tab_alertas, tab_equipos, tab_faenas = st.tabs([
 ])
 
 # ---------------------------------------------------------
-# PESTAÑA 1: ALERTAS DEL SISTEMA
+# PESTAÑA 1: ALERTAS DEL SISTEMA (DISEÑO CUADRÍCULA 6 COLUMNAS)
 # ---------------------------------------------------------
 with tab_alertas:
     st.header("🚨 Panel de Alertas Tempranas y Contratos")
@@ -177,12 +221,21 @@ with tab_alertas:
             # Filtrar solo Auger y Quadra
             df_fabrica = df_faena_alerta[df_faena_alerta['nombre'].astype(str).str.contains('AUGER|QUADRA', case=False, na=False)]
             
-            # Evaluar operativos: Lugar debe ser 'Faena' y NO debe estar en 'Catastrofico'
-            mask_lugar = df_fabrica['Lugar_Deducido'].str.lower() == 'faena'
-            mask_catastrofico = df_fabrica['Estado_Deducido'].str.lower().str.contains('catastr', na=False)
-            mask_operativos = mask_lugar & ~mask_catastrofico
+            # Evaluar correctivos en faena para avisos (No restan al contrato)
+            mask_lugar_faena = df_fabrica['Lugar_Deducido'].str.lower() == 'faena'
+            mask_correctivo = mask_lugar_faena & df_fabrica['Estado_Deducido'].str.lower().str.contains('correctivo', na=False)
             
-            # Clasificamos qué equipos están OK y cuáles están Fuera (para los detalles)
+            equipos_en_correctivo = df_fabrica[mask_correctivo]['nombre'].tolist()
+            if equipos_en_correctivo:
+                alertas_correctivas.append({
+                    'faena': faena, 'equipos': equipos_en_correctivo
+                })
+
+            # Evaluar operativos para el CONTRATO: 
+            # Debe estar en Faena Y NO estar Catastrófico. (Los correctivos en faena SÍ suman como operativos aquí).
+            mask_catastrofico = df_fabrica['Estado_Deducido'].str.lower().str.contains('catastr', na=False)
+            mask_operativos = mask_lugar_faena & ~mask_catastrofico
+            
             df_operativos = df_fabrica[mask_operativos]
             df_fuera = df_fabrica[~mask_operativos]
             
@@ -191,14 +244,6 @@ with tab_alertas:
             
             cant_operativos = len(df_operativos)
             requeridos = info['Contrato']
-            
-            # Detectar equipos en 'Correctivo' en Faena para la alerta de atención
-            mask_correctivo = mask_lugar & df_fabrica['Estado_Deducido'].str.lower().str.contains('correctivo', na=False)
-            equipos_en_correctivo = df_fabrica[mask_correctivo]['nombre'].tolist()
-            if equipos_en_correctivo:
-                alertas_correctivas.append({
-                    'faena': faena, 'equipos': equipos_en_correctivo
-                })
             
             if cant_operativos < requeridos:
                 alertas_contrato_rojas.append({
@@ -220,20 +265,20 @@ with tab_alertas:
             for a in alertas_correctivas:
                 todas_alertas.append({"tipo": "info", "faena": a['faena'], "equipos": a['equipos']})
             
-            # Crear cuadrícula de 6 columnas (Para hacerlos más pequeños y tipo dashboard)
+            # Cuadrícula de 6 columnas para diseño compacto
             columnas_grid = st.columns(6)
             for i, alerta in enumerate(todas_alertas):
                 with columnas_grid[i % 6]:
                     if alerta["tipo"] == "error":
-                        st.error(f"**{alerta['faena']}**\n\n🔴 Faltan: {alerta['faltan']}\n\n*{alerta['op']}/{alerta['req']} Op.*")
+                        st.error(f"**{alerta['faena']}**\n\n🔴 Faltan: {alerta['faltan']}\n\n*{alerta['op']} de {alerta['req']} Op.*")
                         with st.expander("Ver detalle"):
                             st.markdown("✅ **OK:**")
                             st.caption(", ".join(alerta['nombres_op']) if alerta['nombres_op'] else "Ninguno")
-                            st.markdown("❌ **Fuera:**")
+                            st.markdown("❌ **Fuera/Taller:**")
                             st.caption(", ".join(alerta['nombres_fuera']) if alerta['nombres_fuera'] else "Ninguno")
                             
                     elif alerta["tipo"] == "warning":
-                        st.warning(f"**{alerta['faena']}**\n\n🟡 Al límite\n\n*{alerta['op']}/{alerta['req']} Op.*")
+                        st.warning(f"**{alerta['faena']}**\n\n🟡 Al límite\n\n*{alerta['op']} de {alerta['req']} Op.*")
                         with st.expander("Ver detalle"):
                             st.markdown("✅ **OK:**")
                             st.caption(", ".join(alerta['nombres_op']) if alerta['nombres_op'] else "Ninguno")
@@ -252,7 +297,8 @@ with tab_alertas:
         st.divider()
 
         st.subheader("📅 Certificaciones por Vencer (Próximos 30 días)")
-        hoy = pd.Timestamp.utcnow().normalize()
+        # Uso estricto de UTC para evitar errores con los datos crudos de la API
+        hoy = pd.Timestamp(datetime.now(timezone.utc).date(), tz='UTC')
         
         dias_rt = (pd.to_datetime(df_api_global['rev_fecha_expiracion'], errors='coerce', utc=True).dt.normalize() - hoy).dt.days
         dias_sngm = (pd.to_datetime(df_api_global['ser_fecha_expiracion'], errors='coerce', utc=True).dt.normalize() - hoy).dt.days
@@ -288,6 +334,17 @@ with tab_alertas:
 # PESTAÑA 2: BÚSQUEDA Y AUDITORÍA DE EQUIPOS
 # ---------------------------------------------------------
 with tab_equipos:
+    st.header("📅 Planificación y Movimientos de la Semana")
+    
+    # Nuevo bloque de resumen semanal con IA
+    with st.expander("Ver Resumen de Subidas y Bajadas (Carta Gantt)", expanded=True):
+        with st.spinner("Analizando Carta Gantt y Fechas de Entrega con Inteligencia Artificial..."):
+            fecha_hoy_str = datetime.now().strftime("%d de %B de %Y")
+            resumen_semanal = analizar_movimientos_semana(df_excel_global, fecha_hoy_str, lista_modelos_seguros)
+            st.markdown(resumen_semanal)
+            
+    st.divider()
+    
     st.header("🔍 Búsqueda y Auditoría Individual")
     equipo_a_buscar = st.text_input("Ingresa el nombre o código del equipo (Ej: Quadra-1049, Auger-165):")
 
@@ -295,7 +352,7 @@ with tab_equipos:
         if not equipo_a_buscar:
             st.warning("⚠️ Por favor, escribe un equipo para buscar.")
         else:
-            with st.spinner(f'Analizando historial con IA para {equipo_a_buscar}...'):
+            with st.spinner(f'Analizando historial con IA para {equipo_a_buscar}... (Búsqueda Ultrarrápida)'):
                 datos_excel = filtrar_por_equipo(df_excel_global, equipo_a_buscar)
                 datos_api = pd.DataFrame()
                 
@@ -308,7 +365,14 @@ with tab_equipos:
                 else:
                     st.success(f"✅ Conexión Exitosa. Se cruzaron datos históricos con el GPS/Sistema en vivo.")
                     fecha_actual = datetime.now().strftime("%d de %B de %Y")
-                    contexto = f"--- DATOS EXCEL ---\n{datos_excel.to_string()}\n\n--- DATOS API ---\n{datos_api.to_string()}\n"
+                    
+                    cols_excel_relevantes = [c for c in datos_excel.columns if any(palabra in str(c).lower() for palabra in ['estatus', 'estado', 'fecha', 'faena', 'ubicaci', 'ppu', 'vin', 'año', 'modelo', 'marca', 'capacidad', 'trabajo', 'comentario', 'planificada', 'real', 'entrega'])]
+                    datos_excel_reducido = datos_excel[cols_excel_relevantes] if cols_excel_relevantes else datos_excel
+                    
+                    cols_api_relevantes = [c for c in datos_api.columns if c in ['nombre', 'marca_nombre', 'control', 'Lugar_Deducido', 'nombre_faena', 'Estado_Deducido', 'horas_ult', 'rev_fecha_expiracion', 'ser_fecha_expiracion', 'dgmn_fecha_expiracion']]
+                    datos_api_reducido = datos_api[cols_api_relevantes] if not datos_api.empty else datos_api
+
+                    contexto = f"--- DATOS EXCEL ---\n{datos_excel_reducido.to_string()}\n\n--- DATOS API ---\n{datos_api_reducido.to_string()}\n"
                     
                     instruccion = f"""
                     Eres un auditor estricto de bases de datos de equipos pesados. Hoy es {fecha_actual}.
@@ -325,7 +389,7 @@ with tab_equipos:
                     - Analiza los registros del Excel. Presta extrema atención a la columna "estatus MP" y "estado de equipos" (o similares).
                     - Estatus Taller: [Si en estatus MP dice "En proceso", indica que está 'En Taller'. Si dice "Listo", indica que ya fue 'Entregado a Faena'].
                     - Trabajos / Comentarios ("Estado de equipos"): [Copia los últimos comentarios o trabajos realizados exactamente como aparecen en la columna 'estado de equipos'. Si dice Listo, menciona qué fue lo último que se le hizo.]
-                    - ⏱️ Análisis de Desviación de Fechas: [Busca y compara las fechas planificadas con las fechas de entrega reales en el Excel. Si la fecha real es posterior a la planificada, escribe "⚠️ DESVIACIÓN DETECTADA: Se planificó para el [Fecha] pero se entregó/entregará el [Fecha]". Si va a tiempo, escribe "✅ Entregado/Avanzando según lo planificado". Si no hay fechas comparables, omite este punto o pon N/A.]
+                    - ⏱️ Análisis de Desviación de Fechas: [Busca y compara las fechas planificadas con las fechas de entrega reales en el Excel. Si la fecha real es posterior a la planificada, escribe "⚠️ DESVIACIÓN DETECTADA: Se planificó para el [Fecha] pero se entregó/entregará el [Fecha]". Si va a tiempo, escribe "✅ Avanzando según lo planificado". Si no hay fechas comparables, pon N/A.]
                     
                     📍 3. Ubicación y Auditoría de Congruencia:
                     - Ubicación según Excel (Manual): [Extraer Faena/Ubicación]
@@ -344,19 +408,23 @@ with tab_equipos:
                     """
                     
                     try:
-                        respuesta, modelo_exitoso = None, ""
-                        for nombre_modelo in lista_modelos_seguros:
-                            try:
-                                respuesta = genai.GenerativeModel(nombre_modelo).generate_content(instruccion, generation_config={"temperature": 0.0})
-                                modelo_exitoso = nombre_modelo
-                                break 
-                            except Exception: continue 
+                        modelo_usar = "models/gemini-1.5-flash-8b" if "models/gemini-1.5-flash-8b" in lista_modelos_seguros else "models/gemini-1.5-flash"
+                        modelo = genai.GenerativeModel(modelo_usar)
                         
-                        if respuesta:
-                            st.markdown(respuesta.text)
-                            st.caption(f"✨ Análisis generado por IA (Modelo: {modelo_exitoso})")
-                        else:
-                            st.error("Servidores de IA ocupados. Intenta de nuevo.")
+                        st.markdown("### 🤖 Reporte de IA en Tiempo Real:")
+                        
+                        # Generamos la respuesta con stream=True
+                        respuesta = modelo.generate_content(instruccion, generation_config={"temperature": 0.0}, stream=True)
+                        
+                        def texto_en_vivo():
+                            for chunk in respuesta:
+                                if chunk.text:
+                                    yield chunk.text
+                                    
+                        # st.write_stream escribe las palabras instantáneamente en la pantalla
+                        st.write_stream(texto_en_vivo)
+                        
+                        st.caption(f"✨ Análisis generado por IA en modo Ultrarrápido (Modelo: {modelo_usar})")
                     except Exception as e:
                         st.error(f"Error IA: {e}")
 
@@ -394,7 +462,7 @@ with tab_faenas:
             # ------------------------------------
 
             df_faena = df_api_global[df_api_global['nombre_faena'] == faena_seleccionada].copy()
-            st.success(f"🚜 {len(df_faena)} equipos reportados actualmente en **{faena_seleccionada}**")
+            st.success(f"🚜 {len(df_faena)} equipos totales reportados actualmente en **{faena_seleccionada}**")
             
             # Limpiar y seleccionar columnas útiles para mostrar
             cols_vista = {
@@ -420,11 +488,11 @@ with tab_faenas:
             df_mostrar = df_mostrar.fillna("-")
             
             # ==========================================
-            # FORMATO VISUAL: Configuración de Columnas Nativa
+            # FORMATO VISUAL: Configuración de Columnas Nativa para Centrado
             # ==========================================
             st.dataframe(
                 df_mostrar,
-                use_container_width=False,  # Para que se ajuste al texto
+                use_container_width=False,  # Para que se ajuste al texto compactamente
                 hide_index=True,
                 column_config={
                     "Equipo": st.column_config.TextColumn("Equipo", alignment="left"),
