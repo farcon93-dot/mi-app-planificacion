@@ -55,33 +55,34 @@ CONTRATOS_FAENA = {
 # ==========================================
 # 2. MOTOR DE IA DINÁMICO (SOLUCIÓN DEFINITIVA)
 # ==========================================
+@st.cache_resource(ttl=86400) 
+def obtener_modelo_optimizado():
+    """Descubre el modelo una sola vez al día y lo guarda en memoria para no gastar cuota."""
+    modelos_validos = []
+    for m in genai.list_models():
+        if 'generateContent' in m.supported_generation_methods:
+            nombre = m.name.replace("models/", "")
+            if "2.5" not in nombre and "3.1" not in nombre and "experimental" not in nombre:
+                modelos_validos.append(nombre)
+    
+    if not modelos_validos:
+        raise Exception("Tu API Key de Google no tiene modelos habilitados.")
+        
+    modelo_elegido = modelos_validos[0]
+    for m in modelos_validos:
+        if "1.5-flash" in m:
+            modelo_elegido = m
+            break
+    return modelo_elegido
+
 def invocar_ia_segura(instruccion, stream=False):
     """
-    Este nuevo motor NO adivina. Le pregunta directamente a Google qué modelos 
-    tiene habilitados esta API Key, filtra los experimentales y usa el más rápido.
+    Invoca a la IA usando el modelo cacheado, ahorrando el 50% de las consultas a la API.
     """
     try:
-        modelos_validos = []
-        # Le pedimos a Google la lista de modelos de esta cuenta
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                nombre = m.name.replace("models/", "")
-                # Bloquear los modelos beta/experimentales que causan el error 404
-                if "2.5" not in nombre and "3.1" not in nombre and "experimental" not in nombre:
-                    modelos_validos.append(nombre)
-        
-        if not modelos_validos:
-            raise Exception("Tu API Key de Google no tiene modelos habilitados.")
-            
-        # Priorizar el 1.5 flash si existe, si no, el primero de la lista segura
-        modelo_elegido = modelos_validos[0]
-        for m in modelos_validos:
-            if "1.5-flash" in m:
-                modelo_elegido = m
-                break
-
-        # Invocamos a la IA
+        modelo_elegido = obtener_modelo_optimizado()
         modelo = genai.GenerativeModel(modelo_elegido)
+        
         if stream:
             return modelo.generate_content(instruccion, stream=True), modelo_elegido
         else:
