@@ -312,6 +312,16 @@ with tab_faenas:
             cols_existentes = [c for c in cols_vista.keys() if c in df_faena.columns]
             df_mostrar = df_faena[cols_existentes].rename(columns=cols_vista)
             
+            # Formatear fechas para que no se vean como T00:00:00.000Z
+            columnas_fechas = ['Venc. RT', 'Venc. SNGM', 'Venc. DGMN']
+            for col in columnas_fechas:
+                if col in df_mostrar.columns:
+                    # Convertir a fecha y formatear a YYYY-MM-DD (ej: 2026-12-06)
+                    df_mostrar[col] = pd.to_datetime(df_mostrar[col], errors='coerce').dt.strftime('%Y-%m-%d')
+            
+            # Rellenar los valores nulos o "None" por un guión para limpiar la vista
+            df_mostrar = df_mostrar.fillna("-")
+            
             # Formatear el Dataframe en Streamlit
             st.dataframe(
                 df_mostrar,
