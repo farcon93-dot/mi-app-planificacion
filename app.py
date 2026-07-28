@@ -53,42 +53,45 @@ CONTRATOS_FAENA = {
 }
 
 # ==========================================
-# 2. MOTOR DE IA CON LISTA ESTRICTA (Adiós Error 404 de gemini-2.5)
+# 2. MOTOR DE IA DINÁMICO (SOLUCIÓN DEFINITIVA)
 # ==========================================
 def invocar_ia_segura(instruccion, stream=False):
     """
-    Usa una lista de modelos fijos para evitar que Google intente 
-    forzar el uso de modelos experimentales bloqueados (como el 2.5).
+    Este nuevo motor NO adivina. Le pregunta directamente a Google qué modelos 
+    tiene habilitados esta API Key, filtra los experimentales y usa el más rápido.
     """
-    modelos_estrictos = [
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-flash-001",
-        "gemini-1.5-flash-002",
-        "gemini-1.0-pro",
-        "gemini-pro"
-    ]
-
-    ultimo_error = None
-    for nombre_modelo in modelos_estrictos:
-        try:
-            modelo = genai.GenerativeModel(nombre_modelo)
-            if stream:
-                respuesta = modelo.generate_content(instruccion, stream=True)
-                return respuesta, nombre_modelo
-            else:
-                respuesta = modelo.generate_content(instruccion)
-                return respuesta, nombre_modelo
-        except Exception as e:
-            error_str = str(e).lower()
-            ultimo_error = e
-            # Si el error es de cuota, detenemos el proceso inmediatamente
-            if "429" in error_str or "quota" in error_str:
-                raise Exception("429_QUOTA")
-            # Si es un 404 u otro error de versión, pasamos al siguiente modelo de la lista
-            continue 
+    try:
+        modelos_validos = []
+        # Le pedimos a Google la lista de modelos de esta cuenta
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                nombre = m.name.replace("models/", "")
+                # Bloquear los modelos beta/experimentales que causan el error 404
+                if "2.5" not in nombre and "3.1" not in nombre and "experimental" not in nombre:
+                    modelos_validos.append(nombre)
+        
+        if not modelos_validos:
+            raise Exception("Tu API Key de Google no tiene modelos habilitados.")
             
-    raise Exception(f"Fallaron todos los modelos estables. Último error: {ultimo_error}")
+        # Priorizar el 1.5 flash si existe, si no, el primero de la lista segura
+        modelo_elegido = modelos_validos[0]
+        for m in modelos_validos:
+            if "1.5-flash" in m:
+                modelo_elegido = m
+                break
+
+        # Invocamos a la IA
+        modelo = genai.GenerativeModel(modelo_elegido)
+        if stream:
+            return modelo.generate_content(instruccion, stream=True), modelo_elegido
+        else:
+            return modelo.generate_content(instruccion), modelo_elegido
+            
+    except Exception as e:
+        error_str = str(e).lower()
+        if "429" in error_str or "quota" in error_str:
+            raise Exception("429_QUOTA")
+        raise e
 
 # ==========================================
 # 3. FUNCIONES DE EXTRACCIÓN DE DATOS
@@ -164,7 +167,8 @@ def analizar_movimientos_semana(df_excel, fecha_str):
     cols_vitales = [c for c in df_subset.columns if str(c).lower().strip() in ['equipo', 'faena', 'ubicación', 'ubicacion', 'motivo', 'status mp', 'fecha inici', 'fecha fina']]
     df_reducido = df_subset[cols_vitales] if cols_vitales else df_subset
     
-    csv_data = df_reducido.to_csv(index=False)[:8000] # Limite seguro
+    # Acortar fuertemente para no saturar tokens (máx 8000 caracteres)
+    csv_data = df_reducido.to_csv(index=False)[:8000]
     
     instruccion = f"""
     Eres el Planificador de Flota Minera. Hoy es {fecha_str}.
@@ -174,7 +178,7 @@ def analizar_movimientos_semana(df_excel, fecha_str):
     1. 'Fecha Inici': Si cae dentro de los próximos 7 días a partir de hoy, el camión BAJA A TALLER.
     2. 'Fecha Fina': Si cae dentro de los próximos 7 días a partir de hoy, el camión SUBE A FAENA.
     
-    Formato estricto:
+    Formato estricto (no inventes datos que no estén):
     ### 🟢 Equipos que SUBEN a Faena esta semana
     * **[Nombre]**: Sube el [Fecha] a [Faena]
     
@@ -190,8 +194,8 @@ def analizar_movimientos_semana(df_excel, fecha_str):
         return respuesta.text
     except Exception as e:
         if str(e) == "429_QUOTA":
-            return "⚠️ **Límite de IA alcanzado (Cuota Gratuita).** Has excedido las consultas por minuto. Por favor, espera 60 segundos."
-        return f"⚠️ No se pudo generar el resumen semanal. Error: {e}"
+            return "⚠️ **Límite de cuota IA alcanzado.** Has excedido las consultas. Por favor, espera 60 segundos."
+        return f"⚠️ No se pudo generar el resumen. Error: {e}"
 
 # ==========================================
 # 4. INTERFAZ Y PRECARGA DE DATOS
@@ -252,7 +256,6 @@ with tab_alertas:
             if equipos_en_correctivo:
                 alertas_correctivas.append({'faena': faena, 'equipos': equipos_en_correctivo})
             
-            # Correctivos en faena SUMAN como operativos. Catastróficos se restan.
             mask_operativos = mask_lugar_faena & ~mask_catastrofico
             df_operativos = df_fabrica[mask_operativos]
             df_fuera = df_fabrica[~mask_operativos] 
@@ -277,7 +280,6 @@ with tab_alertas:
             for a in alertas_contrato_amarillas: todas_alertas.append({"tipo": "warning", "faena": a['faena'], "op": a['operativos'], "req": a['requeridos'], "nombres_op": a['nombres_op'], "nombres_fuera": a['nombres_fuera']})
             for a in alertas_correctivas: todas_alertas.append({"tipo": "info", "faena": a['faena'], "equipos": a['equipos']})
             
-            # Cuadrícula de 6 columnas
             columnas_grid = st.columns(6)
             for i, alerta in enumerate(todas_alertas):
                 with columnas_grid[i % 6]:
@@ -332,7 +334,7 @@ with tab_equipos:
     st.header("📅 Planificación y Movimientos de la Semana")
     
     with st.expander("Ver Resumen de Subidas y Bajadas (Carta Gantt)"):
-        st.info("💡 Haz clic en el botón para leer la planificación de esta semana. Así evitamos saturar la Inteligencia Artificial al buscar equipos.")
+        st.info("💡 Haz clic en el botón para leer la planificación de esta semana.")
         if st.button("🤖 Analizar Semana con IA"):
             with st.spinner("Analizando fechas de la Carta Gantt con IA..."):
                 fecha_hoy_str = datetime.now().strftime("%d de %B de %Y")
@@ -368,7 +370,7 @@ with tab_equipos:
                 Eres un auditor experto. Hoy es {datetime.now().strftime("%d de %B de %Y")}. Equipo: '{equipo_a_buscar}'.
                 
                 1. Datos Básicos: Extraer de API (Marca, Modelo).
-                2. Actualización de Taller: Estatus (En Taller o Entregado). Trabajos recientes (columna estado de equipos). ¿Hay desviación en la entrega? (Compara fecha planificada vs real).
+                2. Actualización de Taller: Estatus (En Taller o Entregado). Trabajos recientes. ¿Hay desviación en la entrega? (Compara fecha planificada vs real).
                 3. Ubicación y Congruencia: Compara ubicación en Excel vs API.
                 4. Estado Actual (API): Extraer Estado y Horómetro.
                 
@@ -379,7 +381,6 @@ with tab_equipos:
                 try:
                     respuesta_stream, modelo_usado = invocar_ia_segura(instruccion, stream=True)
                     st.markdown(f"### 🤖 Reporte de IA ({modelo_usado}):")
-                    # Mostrar la respuesta progresivamente (streaming real)
                     st.write_stream((chunk.text for chunk in respuesta_stream if chunk.text))
                 except Exception as e:
                     if str(e) == "429_QUOTA":
@@ -411,7 +412,13 @@ with tab_faenas:
                 st.divider()
 
             df_faena = df_api_global[df_api_global['nombre_faena'] == faena_seleccionada].copy()
-            st.success(f"🚜 {len(df_faena)} equipos totales reportados en **{faena_seleccionada}**")
+            st.success(f"🚜 {len(df_faena)} equipos reportados actualmente en **{faena_seleccionada}**")
+            
+            df_faena['Estado_Deducido'] = df_faena['nombre_es'].fillna(df_faena['ultimo_estado']).fillna('OK')
+            df_faena['Estado_Deducido'] = df_faena['Estado_Deducido'].replace(['', 'None', 'nan'], 'OK')
+            
+            df_faena['Lugar_Deducido'] = df_faena['ultimo_lugar'].fillna('Faena')
+            df_faena['Lugar_Deducido'] = df_faena['Lugar_Deducido'].replace(['', 'None', 'nan'], 'Faena')
             
             cols_vista = {
                 'nombre': 'Equipo', 'marca_nombre': 'Marca', 'Lugar_Deducido': 'Lugar/Ubicación',
