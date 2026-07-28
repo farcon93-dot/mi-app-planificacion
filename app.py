@@ -53,51 +53,42 @@ CONTRATOS_FAENA = {
 }
 
 # ==========================================
-# 2. MOTOR DE IA CON AUTO-DESCUBRIMIENTO (Adiós Error 404)
+# 2. MOTOR DE IA CON LISTA ESTRICTA (Adiós Error 404 de gemini-2.5)
 # ==========================================
 def invocar_ia_segura(instruccion, stream=False):
     """
-    Consulta dinámicamente qué modelos permite la API Key actual y usa el mejor disponible,
-    evitando que Google devuelva error 404 por modelos no autorizados o deprecados.
+    Usa una lista de modelos fijos para evitar que Google intente 
+    forzar el uso de modelos experimentales bloqueados (como el 2.5).
     """
-    modelos_disponibles = []
-    try:
-        # Preguntamos a Google cuáles son los modelos reales activos en tu cuenta
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                modelos_disponibles.append(m.name.replace('models/', ''))
-    except Exception:
-        # Fallback de emergencia
-        modelos_disponibles = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
-
-    # Ordenamos por preferencia: queremos el más rápido (flash)
-    preferencias = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"]
-    modelos_a_probar = [p for p in preferencias if p in modelos_disponibles]
-    
-    # Si por alguna razón tu cuenta no tiene ninguno de los de arriba, usamos el primero que exista
-    if not modelos_a_probar and modelos_disponibles:
-        modelos_a_probar = [modelos_disponibles[0]]
-        
-    if not modelos_a_probar:
-        raise Exception("Tu API Key no tiene ningún modelo de generación de texto habilitado por Google.")
+    modelos_estrictos = [
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash-001",
+        "gemini-1.5-flash-002",
+        "gemini-1.0-pro",
+        "gemini-pro"
+    ]
 
     ultimo_error = None
-    for nombre_modelo in modelos_a_probar:
+    for nombre_modelo in modelos_estrictos:
         try:
             modelo = genai.GenerativeModel(nombre_modelo)
             if stream:
                 respuesta = modelo.generate_content(instruccion, stream=True)
+                return respuesta, nombre_modelo
             else:
                 respuesta = modelo.generate_content(instruccion)
-            return respuesta, nombre_modelo
+                return respuesta, nombre_modelo
         except Exception as e:
             error_str = str(e).lower()
             ultimo_error = e
+            # Si el error es de cuota, detenemos el proceso inmediatamente
             if "429" in error_str or "quota" in error_str:
                 raise Exception("429_QUOTA")
-            continue # Si hay 404, prueba con el siguiente modelo válido
+            # Si es un 404 u otro error de versión, pasamos al siguiente modelo de la lista
+            continue 
             
-    raise Exception(f"Fallaron los modelos disponibles ({', '.join(modelos_a_probar)}). Último error: {ultimo_error}")
+    raise Exception(f"Fallaron todos los modelos estables. Último error: {ultimo_error}")
 
 # ==========================================
 # 3. FUNCIONES DE EXTRACCIÓN DE DATOS
@@ -261,6 +252,7 @@ with tab_alertas:
             if equipos_en_correctivo:
                 alertas_correctivas.append({'faena': faena, 'equipos': equipos_en_correctivo})
             
+            # Correctivos en faena SUMAN como operativos. Catastróficos se restan.
             mask_operativos = mask_lugar_faena & ~mask_catastrofico
             df_operativos = df_fabrica[mask_operativos]
             df_fuera = df_fabrica[~mask_operativos] 
@@ -285,6 +277,7 @@ with tab_alertas:
             for a in alertas_contrato_amarillas: todas_alertas.append({"tipo": "warning", "faena": a['faena'], "op": a['operativos'], "req": a['requeridos'], "nombres_op": a['nombres_op'], "nombres_fuera": a['nombres_fuera']})
             for a in alertas_correctivas: todas_alertas.append({"tipo": "info", "faena": a['faena'], "equipos": a['equipos']})
             
+            # Cuadrícula de 6 columnas
             columnas_grid = st.columns(6)
             for i, alerta in enumerate(todas_alertas):
                 with columnas_grid[i % 6]:
@@ -386,10 +379,8 @@ with tab_equipos:
                 try:
                     respuesta_stream, modelo_usado = invocar_ia_segura(instruccion, stream=True)
                     st.markdown(f"### 🤖 Reporte de IA ({modelo_usado}):")
-                    def texto_en_vivo():
-                        for chunk in respuesta_stream:
-                            if chunk.text: yield chunk.text
-                    st.write_stream(texto_en_vivo)
+                    # Mostrar la respuesta progresivamente (streaming real)
+                    st.write_stream((chunk.text for chunk in respuesta_stream if chunk.text))
                 except Exception as e:
                     if str(e) == "429_QUOTA":
                         st.warning("⚠️ **Límite de IA alcanzado.** Espera 60 segundos.")
