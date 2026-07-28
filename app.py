@@ -110,23 +110,38 @@ def filtrar_por_equipo(df, nombre_equipo):
     return df[mask]
 
 # ==========================================
-# 3. INTERFAZ DE LA APLICACIÓN (UI) Y ALERTAS
+# 3. INTERFAZ DE LA APLICACIÓN (UI)
 # ==========================================
-st.title("🚜 Copiloto de Equipos y Auditoría")
+st.title("🚜 Centro de Control: Flota y Auditoría")
 
-# --- MÓDULO DE ALERTAS TEMPRANAS (PROACTIVO) ---
-with st.spinner("Escaneando sistema central para alertas de flota..."):
+# Descargar API globalmente de forma silenciosa para usarla en todos los botones/pestañas
+with st.spinner("Sincronizando con el sistema central en tiempo real..."):
     df_api_global = extraer_datos_api_paralelo()
 
+# Formatear columnas básicas por si vienen vacías
 if not df_api_global.empty:
-    try:
+    cols_necesarias = ['rev_fecha_expiracion', 'ser_fecha_expiracion', 'dgmn_fecha_expiracion', 'nombre', 'nombre_faena', 'nombre_zona', 'horas_ult', 'nombre_es', 'marca_nombre']
+    for col in cols_necesarias:
+        if col not in df_api_global.columns:
+            df_api_global[col] = None
+
+# Crear el menú principal de navegación usando Tabs (Pestañas/Botones)
+tab_alertas, tab_equipos, tab_faenas = st.tabs([
+    "🚨 Alertas del Sistema", 
+    "🔍 Buscar Equipo", 
+    "📍 Ver por Faena"
+])
+
+# ---------------------------------------------------------
+# PESTAÑA 1: ALERTAS DEL SISTEMA
+# ---------------------------------------------------------
+with tab_alertas:
+    st.header("🚨 Panel de Alertas Tempranas (Próximos 30 días)")
+    
+    if df_api_global.empty:
+        st.warning("No se pudieron cargar los datos de la API para generar las alertas.")
+    else:
         hoy = pd.Timestamp(datetime.now().date())
-        
-        # Asegurar que las columnas existan
-        cols_necesarias = ['rev_fecha_expiracion', 'ser_fecha_expiracion', 'dgmn_fecha_expiracion', 'nombre', 'nombre_faena']
-        for col in cols_necesarias:
-            if col not in df_api_global.columns:
-                df_api_global[col] = None
         
         # Calcular días restantes
         dias_rt = (pd.to_datetime(df_api_global['rev_fecha_expiracion'], errors='coerce') - hoy).dt.days
@@ -143,130 +158,166 @@ if not df_api_global.empty:
         alertas_dgmn = df_api_global[dias_dgmn <= 30][['nombre', 'nombre_faena']].copy()
         alertas_dgmn['Dias'] = dias_dgmn[dias_dgmn <= 30]
         
-        total_alertas = len(alertas_rt) + len(alertas_sngm) + len(alertas_dgmn)
+        c1, c2, c3 = st.columns(3)
         
-        if total_alertas > 0:
-            with st.expander(f"🚨 {total_alertas} Alertas Críticas de Cumplimiento (Próximos 30 días)", expanded=True):
-                c1, c2, c3 = st.columns(3)
+        with c1:
+            st.error(f"📄 Revisión Técnica ({len(alertas_rt)} equipos)")
+            for _, row in alertas_rt.sort_values(by="Dias").iterrows():
+                estado = "🔥 VENCIDO" if row['Dias'] < 0 else f"Quedan {int(row['Dias'])} días"
+                st.markdown(f"**{row['nombre']}** ({row['nombre_faena']})  \n*{estado}*")
                 
-                with c1:
-                    st.error(f"📄 Revisión Técnica ({len(alertas_rt)} equipos)")
-                    for _, row in alertas_rt.iterrows():
-                        estado = "VENCIDO" if row['Dias'] < 0 else f"Quedan {int(row['Dias'])} días"
-                        st.markdown(f"**{row['nombre']}** ({row['nombre_faena']}) - {estado}")
-                        
-                with c2:
-                    st.warning(f"⛏️ Sernageomin ({len(alertas_sngm)} equipos)")
-                    for _, row in alertas_sngm.iterrows():
-                        estado = "VENCIDO" if row['Dias'] < 0 else f"Quedan {int(row['Dias'])} días"
-                        st.markdown(f"**{row['nombre']}** ({row['nombre_faena']}) - {estado}")
-                        
-                with c3:
-                    st.info(f"💣 DGMN ({len(alertas_dgmn)} equipos)")
-                    for _, row in alertas_dgmn.iterrows():
-                        estado = "VENCIDO" if row['Dias'] < 0 else f"Quedan {int(row['Dias'])} días"
-                        st.markdown(f"**{row['nombre']}** ({row['nombre_faena']}) - {estado}")
-    except Exception as e:
-        pass # Fallback silencioso si falla la lógica de fechas
-
-st.markdown("---")
-st.markdown("### 🔍 Búsqueda y Auditoría Individual")
-equipo_a_buscar = st.text_input("Ingresa el nombre o código del equipo (Ej: Quadra-1049, Auger-165):")
-
-if st.button("Consultar y Auditar Equipo"):
-    if not equipo_a_buscar:
-        st.warning("⚠️ Por favor, escribe un equipo para buscar.")
-    else:
-        with st.spinner(f'Extrayendo datos de Drive y cruzando con API en vivo para {equipo_a_buscar}...'):
-            
-            # 1. Leer Excels de Drive
-            df_excel, cant_hojas, cant_archivos = cargar_multiples_excel(ENLACES_EXCEL)
-            datos_excel = filtrar_por_equipo(df_excel, equipo_a_buscar)
-            
-            # 2. Leer API y filtrar equipo
-            datos_api = pd.DataFrame()
-            if not df_api_global.empty and 'nombre' in df_api_global.columns:
-                mask_api = df_api_global['nombre'].astype(str).str.lower().str.contains(equipo_a_buscar.lower(), na=False)
-                datos_api = df_api_global[mask_api]
-
-            # Unir resultados
-            if datos_excel.empty and datos_api.empty:
-                st.error(f"No se encontró ninguna coincidencia exacta para: {equipo_a_buscar}")
-                st.caption("Tip: Intenta buscar solo el número (Ej: 1049 en vez de Quadra-1049)")
-                st.stop()
-
-            st.success(f"✅ Conexión Exitosa. Se cruzaron datos de {cant_archivos} Excels con el sistema en tiempo real.")
-            
-            fecha_actual = datetime.now().strftime("%d de %B de %Y")
-            contexto = f"--- DATOS EXCEL ---\n{datos_excel.to_string()}\n\n"
-            contexto += f"--- DATOS API (SISTEMA VIVO) ---\n{datos_api.to_string()}\n"
-            
-            instruccion = f"""
-            Eres un auditor estricto de bases de datos de equipos pesados. Hoy es {fecha_actual}.
-            Tu función es leer los DATOS EXCEL y los DATOS API del equipo '{equipo_a_buscar}' y rellenar estrictamente esta plantilla.
-            
-            REGLAS ABSOLUTAS: 
-            1. Tu respuesta debe ser ÚNICAMENTE el texto de la plantilla completada. NO expliques tu razonamiento.
-            2. Si un dato no existe, escribe 'No registrado'.
-            3. CRUZA Y COMPARA la ubicación del Excel contra la de la API para la auditoría.
-            4. Revisa las fechas (Ej: 2026-07-07) comparadas con HOY ({fecha_actual}) para deducir el estado lógico.
-            
-            🚜 1. Datos Básicos del Equipo:
-            - Marca y Modelo: [Extraer]
-            - PPU: [Extraer]
-            - Año / VIN: [Extraer]
-            - Sistema de Control: [Extraer del campo 'control' en la API o Excel]
-            - Capacidades: [Extraer si aparece en la base de datos]
-            
-            📅 2. Estado de Planificación y OT (Cruce Cronológico):
-            - Situación real a hoy ({fecha_actual}): [Deducir si está en faena o en taller basado en si la fecha de su último MP ya pasó]
-            - Última / Próxima Actividad Programada: [Actividad, Fecha y Estatus. Ignora las que ya pasaron hace mucho tiempo]
-            
-            📍 3. Ubicación y Auditoría de Congruencia:
-            - Ubicación según Excel (Manual): [Extraer Faena/Ubicación]
-            - Ubicación según Sistema (API): [Extraer 'nombre_faena' o 'nombre_zona']
-            - ⚠️ Alerta de Congruencia: [Compara ambas ubicaciones. Si coinciden, escribe "✅ Sistemas congruentes". Si son diferentes, escribe "❌ INCONGRUENCIA DETECTADA: El sistema vivo indica una ubicación distinta al registro de Excel. Revisar planificación."]
-            
-            🛡️ 4. Cumplimiento y Horómetro (Datos en Vivo API):
-            - Horómetro Actual (horas_ult): [Extraer]
-            - Vencimiento Revisión Técnica (RT): [Extraer fecha]
-            - Vencimiento Sernageomin: [Extraer fecha]
-            - Vencimiento DGMN: [Extraer fecha]
-            
-            DATOS A ANALIZAR:
-            {contexto}
-            """
-            
-            try:
-                respuesta = None
-                modelo_exitoso = ""
+        with c2:
+            st.warning(f"⛏️ Sernageomin ({len(alertas_sngm)} equipos)")
+            for _, row in alertas_sngm.sort_values(by="Dias").iterrows():
+                estado = "🔥 VENCIDO" if row['Dias'] < 0 else f"Quedan {int(row['Dias'])} días"
+                st.markdown(f"**{row['nombre']}** ({row['nombre_faena']})  \n*{estado}*")
                 
-                for nombre_modelo in lista_modelos_seguros:
-                    try:
-                        modelo_prueba = genai.GenerativeModel(nombre_modelo)
-                        respuesta = modelo_prueba.generate_content(
-                            instruccion,
-                            generation_config={"temperature": 0.0} 
-                        )
-                        modelo_exitoso = nombre_modelo
-                        break 
-                    except Exception:
-                        continue 
+        with c3:
+            st.info(f"💣 DGMN ({len(alertas_dgmn)} equipos)")
+            for _, row in alertas_dgmn.sort_values(by="Dias").iterrows():
+                estado = "🔥 VENCIDO" if row['Dias'] < 0 else f"Quedan {int(row['Dias'])} días"
+                st.markdown(f"**{row['nombre']}** ({row['nombre_faena']})  \n*{estado}*")
+
+
+# ---------------------------------------------------------
+# PESTAÑA 2: BÚSQUEDA Y AUDITORÍA DE EQUIPOS
+# ---------------------------------------------------------
+with tab_equipos:
+    st.header("🔍 Búsqueda y Auditoría Individual")
+    equipo_a_buscar = st.text_input("Ingresa el nombre o código del equipo (Ej: Quadra-1049, Auger-165):")
+
+    if st.button("Consultar y Auditar Equipo"):
+        if not equipo_a_buscar:
+            st.warning("⚠️ Por favor, escribe un equipo para buscar.")
+        else:
+            with st.spinner(f'Extrayendo datos de Drive y cruzando con API en vivo para {equipo_a_buscar}...'):
                 
-                if respuesta:
-                    st.markdown(respuesta.text)
-                    st.caption(f"✨ Análisis generado automáticamente por IA (Modelo: {modelo_exitoso})")
-                    
-                    with st.expander("Ver tablas originales crudas (Modo Desarrollador)"):
-                        st.write("Datos API:")
-                        st.dataframe(datos_api)
-                        st.write("Datos Excel:")
-                        st.dataframe(datos_excel)
+                # 1. Leer Excels de Drive (Solo al hacer clic)
+                df_excel, cant_hojas, cant_archivos = cargar_multiples_excel(ENLACES_EXCEL)
+                datos_excel = filtrar_por_equipo(df_excel, equipo_a_buscar)
+                
+                # 2. Buscar en API previamente cargada
+                datos_api = pd.DataFrame()
+                if not df_api_global.empty and 'nombre' in df_api_global.columns:
+                    mask_api = df_api_global['nombre'].astype(str).str.lower().str.contains(equipo_a_buscar.lower(), na=False)
+                    datos_api = df_api_global[mask_api]
+
+                # Unir resultados
+                if datos_excel.empty and datos_api.empty:
+                    st.error(f"No se encontró ninguna coincidencia exacta para: {equipo_a_buscar}")
+                    st.caption("Tip: Intenta buscar solo el número (Ej: 1049 en vez de Quadra-1049)")
                 else:
-                    st.error("Los modelos de IA están saturados. Intenta de nuevo en unos segundos.")
+                    st.success(f"✅ Conexión Exitosa. Se cruzaron datos de {cant_archivos} Excels con el sistema en tiempo real.")
                     
-            except Exception as e:
-                st.error(f"Hubo un error con la IA: {e}")
+                    fecha_actual = datetime.now().strftime("%d de %B de %Y")
+                    contexto = f"--- DATOS EXCEL ---\n{datos_excel.to_string()}\n\n"
+                    contexto += f"--- DATOS API (SISTEMA VIVO) ---\n{datos_api.to_string()}\n"
+                    
+                    instruccion = f"""
+                    Eres un auditor estricto de bases de datos de equipos pesados. Hoy es {fecha_actual}.
+                    Tu función es leer los DATOS EXCEL y los DATOS API del equipo '{equipo_a_buscar}' y rellenar estrictamente esta plantilla.
+                    
+                    REGLAS ABSOLUTAS: 
+                    1. Tu respuesta debe ser ÚNICAMENTE el texto de la plantilla completada. NO expliques tu razonamiento.
+                    2. Si un dato no existe, escribe 'No registrado'.
+                    3. CRUZA Y COMPARA la ubicación del Excel contra la de la API para la auditoría.
+                    4. Revisa las fechas comparadas con HOY ({fecha_actual}) para deducir el estado lógico.
+                    
+                    🚜 1. Datos Básicos del Equipo:
+                    - Marca y Modelo: [Extraer]
+                    - PPU: [Extraer]
+                    - Año / VIN: [Extraer]
+                    - Sistema de Control: [Extraer del campo 'control' en la API o Excel]
+                    - Capacidades: [Extraer si aparece en la base de datos]
+                    
+                    📅 2. Estado de Planificación y OT (Cruce Cronológico):
+                    - Situación real a hoy ({fecha_actual}): [Deducir si está en faena o en taller basado en fechas]
+                    - Última / Próxima Actividad Programada: [Actividad, Fecha y Estatus]
+                    
+                    📍 3. Ubicación y Auditoría de Congruencia:
+                    - Ubicación según Excel (Manual): [Extraer Faena/Ubicación de los Excels]
+                    - Ubicación según Sistema (API): [Extraer 'nombre_faena' y 'nombre_zona' de la API]
+                    - ⚠️ Alerta de Congruencia: [Compara ambas ubicaciones. Si coinciden o son razonablemente la misma, escribe "✅ Sistemas congruentes". Si son diferentes (ej. Excel dice Chuquicamata y API dice Pelambres), escribe "❌ INCONGRUENCIA DETECTADA: El sistema vivo indica una ubicación distinta al registro manual. Revisar."]
+                    
+                    🛡️ 4. Cumplimiento y Horómetro (Datos en Vivo API):
+                    - Horómetro Actual (horas_ult): [Extraer de API]
+                    - Vencimiento Revisión Técnica (RT): [Extraer 'rev_fecha_expiracion' de API]
+                    - Vencimiento Sernageomin: [Extraer 'ser_fecha_expiracion' de API]
+                    - Vencimiento DGMN: [Extraer 'dgmn_fecha_expiracion' de API]
+                    
+                    DATOS A ANALIZAR:
+                    {contexto}
+                    """
+                    
+                    try:
+                        respuesta = None
+                        modelo_exitoso = ""
+                        
+                        for nombre_modelo in lista_modelos_seguros:
+                            try:
+                                modelo_prueba = genai.GenerativeModel(nombre_modelo)
+                                respuesta = modelo_prueba.generate_content(
+                                    instruccion,
+                                    generation_config={"temperature": 0.0} 
+                                )
+                                modelo_exitoso = nombre_modelo
+                                break 
+                            except Exception:
+                                continue 
+                        
+                        if respuesta:
+                            st.markdown(respuesta.text)
+                            st.caption(f"✨ Análisis generado automáticamente por IA (Modelo: {modelo_exitoso})")
+                        else:
+                            st.error("Los modelos de IA están saturados. Intenta de nuevo en unos segundos.")
+                            
+                    except Exception as e:
+                        st.error(f"Hubo un error con la IA: {e}")
+
+# ---------------------------------------------------------
+# PESTAÑA 3: VISTA POR FAENA
+# ---------------------------------------------------------
+with tab_faenas:
+    st.header("📍 Resumen Operativo por Faena")
+    
+    if df_api_global.empty:
+        st.warning("No hay datos de API disponibles para mostrar las faenas.")
+    else:
+        # Extraer lista de faenas únicas eliminando nulos
+        faenas_disponibles = sorted(df_api_global['nombre_faena'].dropna().unique().tolist())
+        
+        faena_seleccionada = st.selectbox(
+            "Seleccione una Faena para ver los equipos presentes (Datos en vivo desde el Sistema):",
+            ["--- Seleccionar Faena ---"] + faenas_disponibles
+        )
+        
+        if faena_seleccionada != "--- Seleccionar Faena ---":
+            df_faena = df_api_global[df_api_global['nombre_faena'] == faena_seleccionada].copy()
+            
+            st.success(f"🚜 {len(df_faena)} equipos reportados actualmente en **{faena_seleccionada}**")
+            
+            # Limpiar y seleccionar columnas útiles para mostrar
+            cols_vista = {
+                'nombre': 'Equipo',
+                'marca_nombre': 'Marca',
+                'nombre_zona': 'Zona/Ubicación',
+                'horas_ult': 'Horómetro (hrs)',
+                'nombre_es': 'Estado Actual',
+                'rev_fecha_expiracion': 'Venc. RT',
+                'ser_fecha_expiracion': 'Venc. SNGM',
+                'dgmn_fecha_expiracion': 'Venc. DGMN'
+            }
+            
+            # Asegurar que existan las columnas antes de renombrar
+            cols_existentes = [c for c in cols_vista.keys() if c in df_faena.columns]
+            df_mostrar = df_faena[cols_existentes].rename(columns=cols_vista)
+            
+            # Formatear el Dataframe en Streamlit
+            st.dataframe(
+                df_mostrar,
+                use_container_width=True,
+                hide_index=True
+            )
 
 st.divider()
-st.caption("Datos sincronizados vía Google Drive & Dashboard API (v2.5 Proactiva)")
+st.caption("Sistema Centralizado de Planificación y Cumplimiento v3.0 | Sincronización en tiempo real")
