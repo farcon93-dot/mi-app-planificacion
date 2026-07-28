@@ -179,14 +179,14 @@ with tab_alertas:
             df_fabrica = df_faena_alerta[df_faena_alerta['nombre'].astype(str).str.contains('AUGER|QUADRA', case=False, na=False)]
             
             # Evaluar operativos: Lugar debe ser 'Faena' y NO debe estar en 'Catastrofico'
-            # (El estado 'Correctivo' ahora SÍ se considera para sumar al contrato)
+            # Los correctivos en faena los contamos como dentro del contrato pero lanzamos alerta
             mask_lugar = df_fabrica['Lugar_Deducido'].str.lower() == 'faena'
             mask_estado = ~df_fabrica['Estado_Deducido'].str.lower().str.contains('catastr', na=False)
             
             cant_operativos = len(df_fabrica[mask_lugar & mask_estado])
             requeridos = info['Contrato']
             
-            # Detectar específicamente equipos en 'Correctivo' para la nueva alerta de atención
+            # Detectar equipos en 'Correctivo' en Faena para la alerta de atención
             mask_correctivo = mask_lugar & df_fabrica['Estado_Deducido'].str.lower().str.contains('correctivo', na=False)
             equipos_en_correctivo = df_fabrica[mask_correctivo]['nombre'].tolist()
             if equipos_en_correctivo:
@@ -204,13 +204,13 @@ with tab_alertas:
                 })
                 
         if alertas_contrato_rojas or alertas_contrato_amarillas or alertas_correctivas:
-            # Primero mostramos las rojas (Fuera de contrato)
+            # Rojas (Fuera de contrato)
             for alerta in alertas_contrato_rojas:
                 st.error(f"🔴 **FUERA DE CONTRATO en {alerta['faena']}**: Tienes **{alerta['operativos']}** operativos de **{alerta['requeridos']}** requeridos. ¡Falta {alerta['faltan']} equipo(s)!")
-            # Luego las amarillas (En el límite)
+            # Amarillas (En el límite)
             for alerta in alertas_contrato_amarillas:
                 st.warning(f"🟡 **ALERTA en {alerta['faena']}**: Estás justo en el límite (**{alerta['operativos']}/{alerta['requeridos']}**). Si falla 1 equipo más, quedas fuera de contrato.")
-            # Luego los avisos informativos sobre correctivos pendientes
+            # Avisos de Correctivos pendientes
             for alerta in alertas_correctivas:
                 nombres = ", ".join(alerta['equipos'])
                 st.info(f"🔧 **Atención en {alerta['faena']}**: Tienes {len(alerta['equipos'])} equipo(s) en CORRECTIVO que deben ser atendidos a la brevedad: {nombres}.")
@@ -289,9 +289,11 @@ with tab_equipos:
                     - Sistema de Control: [Extraer 'control' de la API o Excel]
                     - Capacidades: [Extraer toneladas/litros si aparece detallado en Excel]
                     
-                    📅 2. Estado de Planificación y OT:
-                    - Situación real a hoy ({fecha_actual}): [Deducir si está en faena o en taller]
-                    - Última / Próxima Actividad Programada: [Actividad, Fecha y Estatus]
+                    🛠️ 2. Actualización de Taller y Planificación (Reunión Diaria):
+                    - Analiza los registros del Excel. Presta extrema atención a la columna "estatus MP" y "estado de equipos" (o similares).
+                    - Estatus Taller: [Si en estatus MP dice "En proceso", indica que está 'En Taller'. Si dice "Listo", indica que ya fue 'Entregado a Faena'].
+                    - Trabajos / Comentarios ("Estado de equipos"): [Copia los últimos comentarios o trabajos realizados exactamente como aparecen en la columna 'estado de equipos'. Si dice Listo, menciona qué fue lo último que se le hizo.]
+                    - ⏱️ Análisis de Desviación de Fechas: [Busca y compara las fechas planificadas con las fechas de entrega reales en el Excel. Si la fecha real es posterior a la planificada, escribe "⚠️ DESVIACIÓN DETECTADA: Se planificó para el [Fecha] pero se entregó/entregará el [Fecha]". Si va a tiempo, escribe "✅ Entregado/Avanzando según lo planificado". Si no hay fechas comparables, omite este punto o pon N/A.]
                     
                     📍 3. Ubicación y Auditoría de Congruencia:
                     - Ubicación según Excel (Manual): [Extraer Faena/Ubicación]
@@ -401,5 +403,5 @@ with tab_faenas:
                 {'selector': 'th', 'props': [('text-align', 'center')]}
             ])
             
-            # Mostramos la tabla (use_container_width=False hace que las columnas se ajusten al texto)
+            # Mostramos la tabla ajustando el ancho al texto y centrado
             st.dataframe(df_estilizado, use_container_width=False, hide_index=True)
