@@ -24,7 +24,7 @@ ENLACES_EXCEL = [
     "https://docs.google.com/spreadsheets/d/1VrDHEb-D7oeypyYdhUpd3_tw_jggTu3K/edit?usp=drive_link&ouid=112672268024787990541&rtpof=true&sd=true"
 ]
 
-# Diccionario Global de Contratos (Estático y Ultrarrápido)
+# Diccionario Global de Contratos
 CONTRATOS_FAENA = {
     "Centinela": {"Segmento": 1, "Contrato": 13, "Back Up": 3},
     "Collahuasi": {"Segmento": 1, "Contrato": 6, "Back Up": 2},
@@ -54,16 +54,24 @@ CONTRATOS_FAENA = {
 # 2. FUNCIONES INTELIGENTES Y MOTORES
 # ==========================================
 @st.cache_resource
-def obtener_lista_modelos():
+def obtener_nombre_modelo():
+    """Obtiene dinámicamente el nombre correcto del modelo desde Google"""
     genai.configure(api_key=GEMINI_API_KEY)
     try:
         modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        modelos_seguros = [m for m in modelos if 'vision' not in m]
-        return [m for m in modelos_seguros if 'flash' in m] + ["models/gemini-1.5-flash"]
+        # Preferir un modelo 'flash' (ultra rápido)
+        for m in modelos:
+            if 'flash' in m.lower():
+                return m
+        # Si no hay flash, buscar 'pro'
+        for m in modelos:
+            if 'pro' in m.lower():
+                return m
+        # Si todo falla, devolver el primero disponible
+        return modelos[0] if modelos else "gemini-1.5-flash-latest"
     except Exception:
-        return ["models/gemini-1.5-flash"]
-
-lista_modelos_seguros = obtener_lista_modelos()
+        # Fallback de emergencia
+        return "gemini-1.5-flash-latest"
 
 @st.cache_data(ttl=600) 
 def cargar_multiples_excel(lista_urls):
@@ -124,50 +132,47 @@ def filtrar_por_equipo(df, nombre_equipo):
     mask = df.astype(str).apply(lambda x: x.str.lower().str.contains(termino, na=False)).any(axis=1)
     return df[mask]
 
-@st.cache_data(ttl=3600) # Se actualiza cada hora para no ralentizar la app
-def analizar_movimientos_semana(df_excel, fecha_str, modelos):
+@st.cache_data(ttl=3600)
+def analizar_movimientos_semana(df_excel, fecha_str):
     if df_excel.empty: return "No hay datos de planificación disponibles."
     
-    # Filtrar solo las hojas que nos interesan para no saturar a la IA
     mask = df_excel['Origen_Datos'].astype(str).str.contains('proceso|mov. equipos', case=False, na=False)
     df_subset = df_excel[mask].dropna(how='all', axis=1).dropna(how='all', axis=0)
-    
-    # Convertir a texto para la IA (limitado a 250k caracteres para seguridad)
     csv_data = df_subset.to_csv(index=False)[:250000] 
     
     instruccion = f"""
     Eres el Ingeniero de Control de Flota Minera. Hoy es {fecha_str}.
-    Tu tarea es analizar la siguiente tabla extraída de las pestañas 'En proceso' (Talleres) y 'mov. equipos' (Carta Gantt).
+    Tu tarea es analizar la siguiente tabla extraída de las pestañas 'En proceso' y 'mov. equipos' (Carta Gantt).
     
     OBJETIVO: Identificar qué camiones se mueven ESTA SEMANA.
     
-    Reglas estrictas:
-    1. 🟢 SUBEN A FAENA: Busca en los datos la columna que indique 'fecha de entrega' (o similar). Si la fecha de entrega al cliente cae dentro de esta semana (lunes a domingo actuales), añádelo a la lista.
-    2. 🔴 BAJAN A TALLER: Busca en los datos correspondientes a 'mov. equipos' (que es una Carta Gantt). Las fechas en las Gantt suelen estar en las cabeceras de las columnas. Identifica qué equipos tienen programada o marcada su bajada de la mina para esta semana.
+    Reglas:
+    1. 🟢 SUBEN A FAENA: Busca 'fecha de entrega'. Si cae esta semana, añádelo.
+    2. 🔴 BAJAN A TALLER: Busca en la Carta Gantt. Identifica qué equipos bajan de la mina esta semana.
     
-    Formato de respuesta deseado:
+    Formato:
     ### 🟢 Equipos que SUBEN a Faena esta semana
-    * **[Nombre Equipo]**: [Fecha] - [Comentario de estado o destino si aparece]
+    * **[Nombre]**: [Fecha] - [Destino/Comentario]
     
     ### 🔴 Equipos que BAJAN de Faena esta semana
-    * **[Nombre Equipo]**: [Fecha programada] - [Faena de origen si aparece]
+    * **[Nombre]**: [Fecha] - [Origen]
     
-    Si luego de analizar toda la tabla no encuentras movimientos para esta semana en alguna categoría, escribe claramente "Ningún movimiento detectado para esta semana." bajo la categoría correspondiente. No agregues explicaciones extras, sé directo.
+    Si no hay, indica "Ningún movimiento detectado para esta semana."
     
-    TABLA DE DATOS PARA ANALIZAR:
+    DATOS:
     {csv_data}
     """
     
     try:
-        modelo_usar = modelos[-1] if modelos else "models/gemini-1.5-flash"
+        modelo_usar = obtener_nombre_modelo()
         modelo = genai.GenerativeModel(modelo_usar)
         respuesta = modelo.generate_content(instruccion, generation_config={"temperature": 0.1})
         return respuesta.text
     except Exception as e:
-        return f"⚠️ No se pudo generar el resumen semanal con IA. Los servidores pueden estar ocupados. Error: {e}"
+        return f"⚠️ No se pudo generar el resumen semanal con IA. Error: {e}"
 
 # ==========================================
-# 3. INTERFAZ Y PRECARGA DE DATOS (CACHÉ)
+# 3. INTERFAZ Y PRECARGA DE DATOS
 # ==========================================
 st.title("🚜 Centro de Control: Flota y Auditoría")
 
@@ -175,7 +180,6 @@ with st.spinner("Sincronizando Sistema Vivo y Bases de Excel... (Solo toma unos 
     df_api_global = extraer_datos_api_paralelo()
     df_excel_global, cant_hojas, cant_archivos = cargar_multiples_excel(ENLACES_EXCEL)
 
-# Limpieza y deducción global para que aplique a TODA la app
 if not df_api_global.empty:
     cols_necesarias = [
         'rev_fecha_expiracion', 'ser_fecha_expiracion', 'dgmn_fecha_expiracion', 
@@ -186,7 +190,6 @@ if not df_api_global.empty:
         if col not in df_api_global.columns:
             df_api_global[col] = None
 
-    # Lógica de Deducción (Si viene nulo, el camión está en "Faena" y estado "OK")
     df_api_global['Estado_Deducido'] = df_api_global['nombre_es'].fillna(df_api_global['ultimo_estado']).fillna('OK')
     df_api_global['Estado_Deducido'] = df_api_global['Estado_Deducido'].replace(['', 'None', 'nan'], 'OK')
     
@@ -200,7 +203,7 @@ tab_alertas, tab_equipos, tab_faenas = st.tabs([
 ])
 
 # ---------------------------------------------------------
-# PESTAÑA 1: ALERTAS DEL SISTEMA (DISEÑO CUADRÍCULA 6 COLUMNAS)
+# PESTAÑA 1: ALERTAS DEL SISTEMA (DISEÑO GRID COMPACTO 6 COLUMNAS)
 # ---------------------------------------------------------
 with tab_alertas:
     st.header("🚨 Panel de Alertas Tempranas y Contratos")
@@ -218,10 +221,8 @@ with tab_alertas:
             if df_faena_alerta.empty:
                 continue
                 
-            # Filtrar solo Auger y Quadra
             df_fabrica = df_faena_alerta[df_faena_alerta['nombre'].astype(str).str.contains('AUGER|QUADRA', case=False, na=False)]
             
-            # Evaluar correctivos en faena para avisos (No restan al contrato)
             mask_lugar_faena = df_fabrica['Lugar_Deducido'].str.lower() == 'faena'
             mask_correctivo = mask_lugar_faena & df_fabrica['Estado_Deducido'].str.lower().str.contains('correctivo', na=False)
             
@@ -231,8 +232,6 @@ with tab_alertas:
                     'faena': faena, 'equipos': equipos_en_correctivo
                 })
 
-            # Evaluar operativos para el CONTRATO: 
-            # Debe estar en Faena Y NO estar Catastrófico. (Los correctivos en faena SÍ suman como operativos aquí).
             mask_catastrofico = df_fabrica['Estado_Deducido'].str.lower().str.contains('catastr', na=False)
             mask_operativos = mask_lugar_faena & ~mask_catastrofico
             
@@ -265,12 +264,11 @@ with tab_alertas:
             for a in alertas_correctivas:
                 todas_alertas.append({"tipo": "info", "faena": a['faena'], "equipos": a['equipos']})
             
-            # Cuadrícula de 6 columnas para diseño compacto
             columnas_grid = st.columns(6)
             for i, alerta in enumerate(todas_alertas):
                 with columnas_grid[i % 6]:
                     if alerta["tipo"] == "error":
-                        st.error(f"**{alerta['faena']}**\n\n🔴 Faltan: {alerta['faltan']}\n\n*{alerta['op']} de {alerta['req']} Op.*")
+                        st.error(f"**{alerta['faena']}**\n\n🔴 Faltan: {alerta['faltan']}\n\n*{alerta['op']} de {alerta['req']}*")
                         with st.expander("Ver detalle"):
                             st.markdown("✅ **OK:**")
                             st.caption(", ".join(alerta['nombres_op']) if alerta['nombres_op'] else "Ninguno")
@@ -278,7 +276,7 @@ with tab_alertas:
                             st.caption(", ".join(alerta['nombres_fuera']) if alerta['nombres_fuera'] else "Ninguno")
                             
                     elif alerta["tipo"] == "warning":
-                        st.warning(f"**{alerta['faena']}**\n\n🟡 Al límite\n\n*{alerta['op']} de {alerta['req']} Op.*")
+                        st.warning(f"**{alerta['faena']}**\n\n🟡 Al límite\n\n*{alerta['op']} de {alerta['req']}*")
                         with st.expander("Ver detalle"):
                             st.markdown("✅ **OK:**")
                             st.caption(", ".join(alerta['nombres_op']) if alerta['nombres_op'] else "Ninguno")
@@ -286,7 +284,7 @@ with tab_alertas:
                             st.caption(", ".join(alerta['nombres_fuera']) if alerta['nombres_fuera'] else "Ninguno")
                             
                     elif alerta["tipo"] == "info":
-                        st.info(f"**{alerta['faena']}**\n\n🔧 En Taller:\n\n*Avisos: {len(alerta['equipos'])}*")
+                        st.info(f"**{alerta['faena']}**\n\n🔧 En Taller:\n\n*{len(alerta['equipos'])} equipo(s)*")
                         with st.expander("Ver detalle"):
                             st.markdown("🔧 **Correctivo(s):**")
                             for eq in alerta['equipos']:
@@ -297,7 +295,6 @@ with tab_alertas:
         st.divider()
 
         st.subheader("📅 Certificaciones por Vencer (Próximos 30 días)")
-        # Uso estricto de UTC para evitar errores con los datos crudos de la API
         hoy = pd.Timestamp(datetime.now(timezone.utc).date(), tz='UTC')
         
         dias_rt = (pd.to_datetime(df_api_global['rev_fecha_expiracion'], errors='coerce', utc=True).dt.normalize() - hoy).dt.days
@@ -336,11 +333,10 @@ with tab_alertas:
 with tab_equipos:
     st.header("📅 Planificación y Movimientos de la Semana")
     
-    # Nuevo bloque de resumen semanal con IA
     with st.expander("Ver Resumen de Subidas y Bajadas (Carta Gantt)", expanded=True):
         with st.spinner("Analizando Carta Gantt y Fechas de Entrega con Inteligencia Artificial..."):
             fecha_hoy_str = datetime.now().strftime("%d de %B de %Y")
-            resumen_semanal = analizar_movimientos_semana(df_excel_global, fecha_hoy_str, lista_modelos_seguros)
+            resumen_semanal = analizar_movimientos_semana(df_excel_global, fecha_hoy_str)
             st.markdown(resumen_semanal)
             
     st.divider()
@@ -363,9 +359,10 @@ with tab_equipos:
                 if datos_excel.empty and datos_api.empty:
                     st.error(f"No se encontró ninguna coincidencia exacta para: {equipo_a_buscar}")
                 else:
-                    st.success(f"✅ Conexión Exitosa. Se cruzaron datos históricos con el GPS/Sistema en vivo.")
+                    st.success(f"✅ Conexión Exitosa. Procesando datos con el modelo IA...")
                     fecha_actual = datetime.now().strftime("%d de %B de %Y")
                     
+                    # Filtro extremo de columnas para que la IA lea ultra rápido
                     cols_excel_relevantes = [c for c in datos_excel.columns if any(palabra in str(c).lower() for palabra in ['estatus', 'estado', 'fecha', 'faena', 'ubicaci', 'ppu', 'vin', 'año', 'modelo', 'marca', 'capacidad', 'trabajo', 'comentario', 'planificada', 'real', 'entrega'])]
                     datos_excel_reducido = datos_excel[cols_excel_relevantes] if cols_excel_relevantes else datos_excel
                     
@@ -408,12 +405,12 @@ with tab_equipos:
                     """
                     
                     try:
-                        modelo_usar = "models/gemini-1.5-flash-8b" if "models/gemini-1.5-flash-8b" in lista_modelos_seguros else "models/gemini-1.5-flash"
+                        # Usar la nueva función robusta
+                        modelo_usar = obtener_nombre_modelo()
                         modelo = genai.GenerativeModel(modelo_usar)
                         
                         st.markdown("### 🤖 Reporte de IA en Tiempo Real:")
                         
-                        # Generamos la respuesta con stream=True
                         respuesta = modelo.generate_content(instruccion, generation_config={"temperature": 0.0}, stream=True)
                         
                         def texto_en_vivo():
@@ -421,12 +418,11 @@ with tab_equipos:
                                 if chunk.text:
                                     yield chunk.text
                                     
-                        # st.write_stream escribe las palabras instantáneamente en la pantalla
                         st.write_stream(texto_en_vivo)
                         
-                        st.caption(f"✨ Análisis generado por IA en modo Ultrarrápido (Modelo: {modelo_usar})")
+                        st.caption(f"✨ Análisis generado por IA (Modelo: {modelo_usar})")
                     except Exception as e:
-                        st.error(f"Error IA: {e}")
+                        st.error(f"Error en el servidor de Inteligencia Artificial: {e}")
 
 # ---------------------------------------------------------
 # PESTAÑA 3: VISTA POR FAENA
@@ -462,9 +458,9 @@ with tab_faenas:
             # ------------------------------------
 
             df_faena = df_api_global[df_api_global['nombre_faena'] == faena_seleccionada].copy()
+            
             st.success(f"🚜 {len(df_faena)} equipos totales reportados actualmente en **{faena_seleccionada}**")
             
-            # Limpiar y seleccionar columnas útiles para mostrar
             cols_vista = {
                 'nombre': 'Equipo',
                 'marca_nombre': 'Marca',
@@ -479,7 +475,6 @@ with tab_faenas:
             cols_existentes = [c for c in cols_vista.keys() if c in df_faena.columns]
             df_mostrar = df_faena[cols_existentes].rename(columns=cols_vista)
             
-            # Formatear fechas a DD/MM/AAAA
             columnas_fechas = ['Venc. RT', 'Venc. SNGM', 'Venc. DGMN']
             for col in columnas_fechas:
                 if col in df_mostrar.columns:
@@ -487,12 +482,10 @@ with tab_faenas:
             
             df_mostrar = df_mostrar.fillna("-")
             
-            # ==========================================
-            # FORMATO VISUAL: Configuración de Columnas Nativa para Centrado
-            # ==========================================
+            # FORMATO VISUAL: Configuración de Columnas Nativa para Centrado y Ajuste
             st.dataframe(
                 df_mostrar,
-                use_container_width=False,  # Para que se ajuste al texto compactamente
+                use_container_width=False, 
                 hide_index=True,
                 column_config={
                     "Equipo": st.column_config.TextColumn("Equipo", alignment="left"),
