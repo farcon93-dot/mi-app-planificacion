@@ -6,9 +6,9 @@ import requests
 import concurrent.futures
 
 # ==========================================
-# 1. CONFIGURACIÓN DE TUS ENLACES Y CLAVES
+# 1. CONFIGURACIÓN CORPORATIVA Y CLAVES
 # ==========================================
-st.set_page_config(page_title="Copiloto de Equipos", layout="wide", page_icon="🚜")
+st.set_page_config(page_title="Copiloto Flota Enaex", layout="wide", page_icon="🚛")
 
 try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"] 
@@ -53,34 +53,12 @@ CONTRATOS_FAENA = {
 }
 
 # ==========================================
-# 2. MOTOR DE IA DINÁMICO (SOLUCIÓN DEFINITIVA)
+# 2. MOTOR DE IA OPTIMIZADO (FIJO)
 # ==========================================
-@st.cache_resource(ttl=86400) 
-def obtener_modelo_optimizado():
-    """Descubre el modelo una sola vez al día y lo guarda en memoria para no gastar cuota."""
-    modelos_validos = []
-    for m in genai.list_models():
-        if 'generateContent' in m.supported_generation_methods:
-            nombre = m.name.replace("models/", "")
-            if "2.5" not in nombre and "3.1" not in nombre and "experimental" not in nombre:
-                modelos_validos.append(nombre)
-    
-    if not modelos_validos:
-        raise Exception("Tu API Key de Google no tiene modelos habilitados.")
-        
-    modelo_elegido = modelos_validos[0]
-    for m in modelos_validos:
-        if "1.5-flash" in m:
-            modelo_elegido = m
-            break
-    return modelo_elegido
-
 def invocar_ia_segura(instruccion, stream=False):
-    """
-    Invoca a la IA usando el modelo cacheado, ahorrando el 50% de las consultas a la API.
-    """
+    """Invoca la IA usando un modelo fijo para evitar gastos de cuota buscando modelos."""
     try:
-        modelo_elegido = obtener_modelo_optimizado()
+        modelo_elegido = "gemini-1.5-flash"
         modelo = genai.GenerativeModel(modelo_elegido)
         
         if stream:
@@ -95,7 +73,7 @@ def invocar_ia_segura(instruccion, stream=False):
         raise e
 
 # ==========================================
-# 3. FUNCIONES DE EXTRACCIÓN DE DATOS
+# 3. FUNCIONES DE EXTRACCIÓN Y FILTRADO
 # ==========================================
 @st.cache_data(ttl=600) 
 def cargar_multiples_excel(lista_urls):
@@ -150,60 +128,67 @@ def extraer_datos_api_paralelo():
         df_api['Origen_Datos'] = "API Sistema en Tiempo Real"
     return df_api
 
-def filtrar_por_equipo(df, nombre_equipo):
-    if df.empty: return df
-    termino = str(nombre_equipo).strip().lower()
-    mask = df.astype(str).apply(lambda x: x.str.lower().str.contains(termino, na=False)).any(axis=1)
+def filtrar_por_multiples_equipos(df, texto_busqueda):
+    if df.empty or not str(texto_busqueda).strip(): return df
+    
+    # Separar por comas y limpiar espacios
+    terminos = [t.strip().lower() for t in str(texto_busqueda).split(",") if t.strip()]
+    if not terminos: return pd.DataFrame()
+    
+    mask = pd.Series(False, index=df.index)
+    for termino in terminos:
+        mask = mask | df.astype(str).apply(lambda x: x.str.lower().str.contains(termino, na=False)).any(axis=1)
+    
     return df[mask]
 
 @st.cache_data(ttl=3600)
 def analizar_movimientos_semana(df_excel, fecha_str):
     if df_excel.empty: return "No hay datos de planificación disponibles."
     
-    # Extraer solo las hojas relevantes
     mask = df_excel['Origen_Datos'].astype(str).str.contains('proceso|mov. equipos', case=False, na=False)
     df_subset = df_excel[mask].dropna(how='all', axis=1).dropna(how='all', axis=0)
     
-    # FILTRO ESTRICTO: Ignoramos los colores y columnas basura de la carta gantt.
     cols_vitales = [c for c in df_subset.columns if str(c).lower().strip() in ['equipo', 'faena', 'ubicación', 'ubicacion', 'motivo', 'status mp', 'fecha inici', 'fecha fina']]
     df_reducido = df_subset[cols_vitales] if cols_vitales else df_subset
     
-    # Acortar fuertemente para no saturar tokens (máx 8000 caracteres)
-    csv_data = df_reducido.to_csv(index=False)[:8000]
+    # Limitar fuertemente caracteres para cuidar la cuota gratuita
+    csv_data = df_reducido.to_csv(index=False)[:4000] 
     
     instruccion = f"""
-    Eres el Planificador de Flota Minera. Hoy es {fecha_str}.
+    Eres el Planificador. Hoy es {fecha_str}.
+    Ignora la carta Gantt. Basa tu análisis SOLO en:
+    1. 'Fecha Inici': Si cae dentro de los próximos 7 días, el camión BAJA A TALLER.
+    2. 'Fecha Fina': Si cae dentro de los próximos 7 días, el camión SUBE A FAENA.
     
-    REGLA DE ORO: IGNORA LOS NÚMEROS SUELTOS O COLORES DE LA CARTA GANTT. 
-    Basa tu análisis ÚNICA y EXCLUSIVAMENTE en estas dos columnas:
-    1. 'Fecha Inici': Si cae dentro de los próximos 7 días a partir de hoy, el camión BAJA A TALLER.
-    2. 'Fecha Fina': Si cae dentro de los próximos 7 días a partir de hoy, el camión SUBE A FAENA.
+    Formato:
+    ### 🟢 Equipos que SUBEN a Faena
+    * **[Nombre]**
+    ### 🔴 Equipos que BAJAN a Taller
+    * **[Nombre]**
     
-    Formato estricto (no inventes datos que no estén):
-    ### 🟢 Equipos que SUBEN a Faena esta semana
-    * **[Nombre]**: Sube el [Fecha] a [Faena]
-    
-    ### 🔴 Equipos que BAJAN a Taller esta semana
-    * **[Nombre]**: Baja el [Fecha] desde [Faena]
-    
-    DATOS A ANALIZAR:
+    DATOS:
     {csv_data}
     """
-    
     try:
-        respuesta, modelo_usado = invocar_ia_segura(instruccion, stream=False)
+        respuesta, _ = invocar_ia_segura(instruccion, stream=False)
         return respuesta.text
     except Exception as e:
-        if str(e) == "429_QUOTA":
-            return "⚠️ **Límite de cuota IA alcanzado.** Has excedido las consultas. Por favor, espera 60 segundos."
-        return f"⚠️ No se pudo generar el resumen. Error: {e}"
+        if str(e) == "429_QUOTA": return "⚠️ **Límite de cuota IA alcanzado.** Revisa tus tablas directamente."
+        return f"⚠️ IA no disponible. Error: {e}"
 
 # ==========================================
-# 4. INTERFAZ Y PRECARGA DE DATOS
+# 4. INTERFAZ GRÁFICA PRINCIPAL
 # ==========================================
-st.title("🚜 Centro de Control: Flota y Auditoría")
+st.markdown(
+    """
+    <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
+        <img src="https://www.enaex.com/wp-content/uploads/2021/04/Enaex_Logo_RGB.png" width="180" style="object-fit: contain;">
+        <h1 style="margin: 0; padding: 0; font-size: 2.2rem;">🚛 Centro de Control: Flota y Auditoría</h1>
+    </div>
+    """, unsafe_allow_html=True
+)
 
-with st.spinner("Sincronizando Sistema Vivo y Bases de Excel... (Solo toma unos segundos)"):
+with st.spinner("Sincronizando Sistema Vivo y Bases de Excel..."):
     df_api_global = extraer_datos_api_paralelo()
     df_excel_global, cant_hojas, cant_archivos = cargar_multiples_excel(ENLACES_EXCEL)
 
@@ -225,7 +210,7 @@ if not df_api_global.empty:
 
 tab_alertas, tab_equipos, tab_faenas = st.tabs([
     "🚨 Alertas del Sistema", 
-    "🔍 Buscar Equipo", 
+    "🔍 Buscar Equipos", 
     "📍 Ver por Faena"
 ])
 
@@ -236,7 +221,7 @@ with tab_alertas:
     st.header("🚨 Panel de Alertas Tempranas y Contratos")
     
     if df_api_global.empty:
-        st.warning("No se pudieron cargar los datos de la API para generar las alertas.")
+        st.warning("No se pudieron cargar los datos de la API.")
     else:
         st.subheader("⚖️ Estado de Cumplimiento de Contratos (Camiones Fábrica)")
         alertas_contrato_rojas = []
@@ -245,8 +230,7 @@ with tab_alertas:
         
         for faena, info in CONTRATOS_FAENA.items():
             df_faena_alerta = df_api_global[df_api_global['nombre_faena'].astype(str).str.strip().str.lower() == faena.lower()]
-            if df_faena_alerta.empty:
-                continue
+            if df_faena_alerta.empty: continue
                 
             df_fabrica = df_faena_alerta[df_faena_alerta['nombre'].astype(str).str.contains('AUGER|QUADRA', case=False, na=False)]
             mask_lugar_faena = df_fabrica['Lugar_Deducido'].str.lower() == 'faena'
@@ -265,15 +249,9 @@ with tab_alertas:
             requeridos = info['Contrato']
             
             if cant_operativos < requeridos:
-                alertas_contrato_rojas.append({
-                    'faena': faena, 'operativos': cant_operativos, 'requeridos': requeridos, 'faltan': requeridos - cant_operativos,
-                    'nombres_op': df_operativos['nombre'].tolist(), 'nombres_fuera': df_fuera['nombre'].tolist()
-                })
+                alertas_contrato_rojas.append({'faena': faena, 'operativos': cant_operativos, 'requeridos': requeridos, 'faltan': requeridos - cant_operativos, 'nombres_op': df_operativos['nombre'].tolist(), 'nombres_fuera': df_fuera['nombre'].tolist()})
             elif cant_operativos == requeridos:
-                alertas_contrato_amarillas.append({
-                    'faena': faena, 'operativos': cant_operativos, 'requeridos': requeridos,
-                    'nombres_op': df_operativos['nombre'].tolist(), 'nombres_fuera': df_fuera['nombre'].tolist()
-                })
+                alertas_contrato_amarillas.append({'faena': faena, 'operativos': cant_operativos, 'requeridos': requeridos, 'nombres_op': df_operativos['nombre'].tolist(), 'nombres_fuera': df_fuera['nombre'].tolist()})
                 
         if alertas_contrato_rojas or alertas_contrato_amarillas or alertas_correctivas:
             todas_alertas = []
@@ -299,7 +277,7 @@ with tab_alertas:
                         with st.expander("Ver detalle"):
                             for eq in alerta['equipos']: st.caption(f"- {eq}")
         else:
-            st.success("✅ Excelente. Todos los contratos tienen los equipos operativos requeridos y no hay equipos en correctivo.")
+            st.success("✅ Excelente. Todos los contratos tienen los equipos operativos requeridos.")
             
         st.divider()
         st.subheader("📅 Certificaciones por Vencer (Próximos 30 días)")
@@ -332,62 +310,79 @@ with tab_alertas:
 # PESTAÑA 2: BÚSQUEDA Y AUDITORÍA DE EQUIPOS
 # ---------------------------------------------------------
 with tab_equipos:
-    st.header("📅 Planificación y Movimientos de la Semana")
-    
     with st.expander("Ver Resumen de Subidas y Bajadas (Carta Gantt)"):
-        st.info("💡 Haz clic en el botón para leer la planificación de esta semana.")
+        st.info("💡 Haz clic en el botón para leer la planificación de esta semana. Así evitamos saturar la IA.")
         if st.button("🤖 Analizar Semana con IA"):
-            with st.spinner("Analizando fechas de la Carta Gantt con IA..."):
-                fecha_hoy_str = datetime.now().strftime("%d de %B de %Y")
-                resumen_semanal = analizar_movimientos_semana(df_excel_global, fecha_hoy_str)
-                st.markdown(resumen_semanal)
+            with st.spinner("Analizando fechas..."):
+                st.markdown(analizar_movimientos_semana(df_excel_global, datetime.now().strftime("%d de %B de %Y")))
             
     st.divider()
     
-    st.header("🔍 Búsqueda y Auditoría Individual")
-    equipo_a_buscar = st.text_input("Ingresa el nombre o código del equipo (Ej: Quadra-1049, Auger-165):")
+    st.header("🔍 Búsqueda Múltiple de Equipos")
+    equipo_a_buscar = st.text_input("Ingresa uno o varios equipos separados por coma (Ej: Quadra-1049, Auger-165, Quadra-1030):")
 
-    if st.button("Consultar y Auditar Equipo"):
+    if st.button("Consultar Base de Datos y Auditar"):
         if not equipo_a_buscar:
-            st.warning("⚠️ Escribe un equipo para buscar.")
+            st.warning("⚠️ Escribe al menos un equipo para buscar.")
         else:
-            datos_excel = filtrar_por_equipo(df_excel_global, equipo_a_buscar)
+            # 1. FILTRADO DE DATOS (MÚLTIPLES EQUIPOS)
+            datos_excel = filtrar_por_multiples_equipos(df_excel_global, equipo_a_buscar)
+            
             datos_api = pd.DataFrame()
             if not df_api_global.empty and 'nombre' in df_api_global.columns:
-                datos_api = df_api_global[df_api_global['nombre'].astype(str).str.lower().str.contains(equipo_a_buscar.lower(), na=False)]
+                datos_api = filtrar_por_multiples_equipos(df_api_global, equipo_a_buscar)
 
             if datos_excel.empty and datos_api.empty:
                 st.error(f"No se encontró ninguna coincidencia para: {equipo_a_buscar}")
             else:
-                cols_excel = [c for c in datos_excel.columns if any(p in str(c).lower() for p in ['estatus', 'status mp', 'estado', 'fecha', 'faena', 'ubicación', 'comentario', 'planificada', 'real', 'entrega', 'inici', 'fina'])]
+                # 2. REDUCCIÓN DE COLUMNAS
+                cols_excel = [c for c in datos_excel.columns if any(p in str(c).lower() for p in ['equipo', 'estatus', 'status mp', 'estado', 'fecha', 'faena', 'ubicación', 'comentario', 'planificada', 'real', 'entrega', 'inici', 'fina'])]
                 datos_excel_reducido = datos_excel[cols_excel] if cols_excel else datos_excel
                 cols_api = [c for c in datos_api.columns if c in ['nombre', 'marca_nombre', 'Lugar_Deducido', 'nombre_faena', 'Estado_Deducido', 'horas_ult']]
                 datos_api_reducido = datos_api[cols_api] if not datos_api.empty else datos_api
 
-                texto_excel = datos_excel_reducido.to_string()[:3000]
+                # 3. MOSTRAR DATOS CRUDOS SIEMPRE (SEGURO CONTRA FALLAS DE IA)
+                st.markdown("### 📑 Datos Crudos Obtenidos")
+                st.caption("Esta información se extrae directamente de los sistemas sin importar si la IA está disponible.")
+                
+                col_api, col_excel = st.columns(2)
+                with col_api:
+                    st.success("📡 Datos del Sistema (API Vivo)")
+                    if not datos_api_reducido.empty:
+                        st.dataframe(datos_api_reducido, hide_index=True)
+                    else:
+                        st.write("No hay datos en el sistema para este equipo.")
+                
+                with col_excel:
+                    st.info("📊 Datos de Planificación (Excel)")
+                    if not datos_excel_reducido.empty:
+                        st.dataframe(datos_excel_reducido, hide_index=True)
+                    else:
+                        st.write("No hay datos de planificación para este equipo.")
+                        
+                st.divider()
+
+                # 4. INTENTO DE ANÁLISIS CON IA
+                texto_excel = datos_excel_reducido.to_string()[:2000] # Super reducido para cuidar cuota
                 texto_api = datos_api_reducido.to_string()[:1000]
                 
                 instruccion = f"""
-                Eres un auditor experto. Hoy es {datetime.now().strftime("%d de %B de %Y")}. Equipo: '{equipo_a_buscar}'.
+                Eres un auditor experto. Analiza estos equipos: '{equipo_a_buscar}'.
+                Compara los datos del Excel vs API. Resalta discrepancias de ubicación, atrasos en fechas de entrega, y comenta los trabajos recientes del taller. Se breve y directo.
                 
-                1. Datos Básicos: Extraer de API (Marca, Modelo).
-                2. Actualización de Taller: Estatus (En Taller o Entregado). Trabajos recientes. ¿Hay desviación en la entrega? (Compara fecha planificada vs real).
-                3. Ubicación y Congruencia: Compara ubicación en Excel vs API.
-                4. Estado Actual (API): Extraer Estado y Horómetro.
-                
-                DATOS EXCEL: {texto_excel}
-                DATOS API: {texto_api}
+                EXCEL: {texto_excel}
+                API: {texto_api}
                 """
                 
+                st.markdown("### 🤖 Análisis de Inteligencia Artificial")
                 try:
-                    respuesta_stream, modelo_usado = invocar_ia_segura(instruccion, stream=True)
-                    st.markdown(f"### 🤖 Reporte de IA ({modelo_usado}):")
+                    respuesta_stream, modelo = invocar_ia_segura(instruccion, stream=True)
                     st.write_stream((chunk.text for chunk in respuesta_stream if chunk.text))
                 except Exception as e:
                     if str(e) == "429_QUOTA":
-                        st.warning("⚠️ **Límite de IA alcanzado.** Espera 60 segundos.")
+                        st.warning("⚠️ **Límite Diario/Minuto de IA alcanzado (Cuota Gratuita de Google).** Pero no te preocupes, puedes seguir utilizando las tablas de datos crudos de arriba para hacer tu gestión manual.")
                     else:
-                        st.error(f"Error en motor de IA: {e}")
+                        st.error(f"Error en IA: {e}. Revisa las tablas crudas superiores.")
 
 # ---------------------------------------------------------
 # PESTAÑA 3: VISTA POR FAENA
@@ -413,13 +408,7 @@ with tab_faenas:
                 st.divider()
 
             df_faena = df_api_global[df_api_global['nombre_faena'] == faena_seleccionada].copy()
-            st.success(f"🚜 {len(df_faena)} equipos reportados actualmente en **{faena_seleccionada}**")
-            
-            df_faena['Estado_Deducido'] = df_faena['nombre_es'].fillna(df_faena['ultimo_estado']).fillna('OK')
-            df_faena['Estado_Deducido'] = df_faena['Estado_Deducido'].replace(['', 'None', 'nan'], 'OK')
-            
-            df_faena['Lugar_Deducido'] = df_faena['ultimo_lugar'].fillna('Faena')
-            df_faena['Lugar_Deducido'] = df_faena['Lugar_Deducido'].replace(['', 'None', 'nan'], 'Faena')
+            st.success(f"🚛 {len(df_faena)} equipos reportados actualmente en **{faena_seleccionada}**")
             
             cols_vista = {
                 'nombre': 'Equipo', 'marca_nombre': 'Marca', 'Lugar_Deducido': 'Lugar/Ubicación',
