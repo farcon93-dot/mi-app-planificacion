@@ -288,6 +288,32 @@ with tab_equipos:
 with tab_faenas:
     st.header("📍 Resumen Operativo por Faena")
     
+    # --- DICCIONARIO DE CONTRATOS (Camiones Fábrica y Back Up) ---
+    CONTRATOS_FAENA = {
+        "Centinela": {"Segmento": 1, "Contrato": 13, "Back Up": 3},
+        "Collahuasi": {"Segmento": 1, "Contrato": 6, "Back Up": 2},
+        "Los Bronces": {"Segmento": 1, "Contrato": 7, "Back Up": 1},
+        "Los Pelambres": {"Segmento": 1, "Contrato": 5, "Back Up": 2},
+        "Nueva Centinela": {"Segmento": 1, "Contrato": 3, "Back Up": 1},
+        "Radomiro Tomic": {"Segmento": 1, "Contrato": 5, "Back Up": 2},
+        "Sierra Gorda": {"Segmento": 1, "Contrato": 6, "Back Up": 2},
+        "Spence": {"Segmento": 1, "Contrato": 5, "Back Up": 1},
+        "Andina": {"Segmento": 2, "Contrato": 5, "Back Up": 4},
+        "Antucoya": {"Segmento": 2, "Contrato": 3, "Back Up": 1},
+        "Chuquicamata": {"Segmento": 2, "Contrato": 2, "Back Up": 1},
+        "Lomas Bayas": {"Segmento": 2, "Contrato": 5, "Back Up": 1},
+        "Los Colorados": {"Segmento": 2, "Contrato": 3, "Back Up": 1},
+        "Salvador": {"Segmento": 2, "Contrato": 4, "Back Up": 2},
+        "Teniente": {"Segmento": 2, "Contrato": 1, "Back Up": 1},
+        "Zaldivar": {"Segmento": 2, "Contrato": 2, "Back Up": 1},
+        "Cerro Negro": {"Segmento": 3, "Contrato": 1, "Back Up": 1},
+        "El Soldado": {"Segmento": 3, "Contrato": 2, "Back Up": 1},
+        "Michilla": {"Segmento": 3, "Contrato": 1, "Back Up": 1},
+        "Pleito": {"Segmento": 3, "Contrato": 1, "Back Up": 1},
+        "Romeral": {"Segmento": 3, "Contrato": 1, "Back Up": 1},
+        "Salares Norte": {"Segmento": 3, "Contrato": 1, "Back Up": 2}
+    }
+
     if df_api_global.empty:
         st.warning("No hay datos de API disponibles para mostrar las faenas.")
     else:
@@ -300,41 +326,24 @@ with tab_faenas:
         )
         
         if faena_seleccionada != "--- Seleccionar Faena ---":
+            
+            # --- MOSTRAR INFORMACIÓN DEL CONTRATO (SI EXISTE PARA ESTA FAENA) ---
+            # Buscamos si la faena seleccionada coincide con alguna de nuestro diccionario
+            info_contrato = None
+            for nombre_planta, datos in CONTRATOS_FAENA.items():
+                if nombre_planta.lower() in faena_seleccionada.lower():
+                    info_contrato = datos
+                    break
+            
+            if info_contrato:
+                st.info(f"📋 **Condiciones de Contrato: {faena_seleccionada}**")
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Segmento de la Faena", f"Segmento {info_contrato['Segmento']}")
+                col2.metric("Camiones Fábrica (Contrato)", info_contrato['Contrato'])
+                col3.metric("Equipos Back Up Requeridos", info_contrato['Back Up'])
+                st.divider()
+            # --------------------------------------------------------------------
+
             df_faena = df_api_global[df_api_global['nombre_faena'] == faena_seleccionada].copy()
             
-            st.success(f"🚜 {len(df_faena)} equipos reportados actualmente en **{faena_seleccionada}**")
-            
-            # Limpiar y seleccionar columnas útiles para mostrar
-            cols_vista = {
-                'nombre': 'Equipo',
-                'marca_nombre': 'Marca',
-                'ultimo_lugar': 'Lugar/Ubicación',
-                'horas_ult': 'Horómetro (hrs)',
-                'ultimo_estado': 'Estado Actual',
-                'rev_fecha_expiracion': 'Venc. RT',
-                'ser_fecha_expiracion': 'Venc. SNGM',
-                'dgmn_fecha_expiracion': 'Venc. DGMN'
-            }
-            
-            # Asegurar que existan las columnas antes de renombrar
-            cols_existentes = [c for c in cols_vista.keys() if c in df_faena.columns]
-            df_mostrar = df_faena[cols_existentes].rename(columns=cols_vista)
-            
-            # Formatear fechas a DD/MM/AAAA (Latino/Chileno)
-            columnas_fechas = ['Venc. RT', 'Venc. SNGM', 'Venc. DGMN']
-            for col in columnas_fechas:
-                if col in df_mostrar.columns:
-                    df_mostrar[col] = pd.to_datetime(df_mostrar[col], errors='coerce').dt.strftime('%d/%m/%Y')
-            
-            # Rellenar los valores nulos o "None" por un guión para limpiar la vista visualmente
-            df_mostrar = df_mostrar.fillna("-")
-            
-            # Formatear el Dataframe en Streamlit
-            st.dataframe(
-                df_mostrar,
-                use_container_width=True,
-                hide_index=True
-            )
-
-st.divider()
-st.caption("Sistema Centralizado de Planificación y Cumplimiento v5.0 | Motor Caché de Alta Velocidad")
+            st.success(f"🚜 {len(df_faena)} equipos totales reportados actualmente en **{faena_seleccionada}**")
