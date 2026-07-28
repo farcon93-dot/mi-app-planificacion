@@ -141,12 +141,12 @@ with tab_alertas:
     if df_api_global.empty:
         st.warning("No se pudieron cargar los datos de la API para generar las alertas.")
     else:
-        hoy = pd.Timestamp(datetime.now().date())
+        hoy = pd.Timestamp.utcnow().normalize()
         
-        # Calcular días restantes
-        dias_rt = (pd.to_datetime(df_api_global['rev_fecha_expiracion'], errors='coerce') - hoy).dt.days
-        dias_sngm = (pd.to_datetime(df_api_global['ser_fecha_expiracion'], errors='coerce') - hoy).dt.days
-        dias_dgmn = (pd.to_datetime(df_api_global['dgmn_fecha_expiracion'], errors='coerce') - hoy).dt.days
+        # Calcular días restantes (forzando UTC para evitar TypeError)
+        dias_rt = (pd.to_datetime(df_api_global['rev_fecha_expiracion'], errors='coerce', utc=True).dt.normalize() - hoy).dt.days
+        dias_sngm = (pd.to_datetime(df_api_global['ser_fecha_expiracion'], errors='coerce', utc=True).dt.normalize() - hoy).dt.days
+        dias_dgmn = (pd.to_datetime(df_api_global['dgmn_fecha_expiracion'], errors='coerce', utc=True).dt.normalize() - hoy).dt.days
         
         # Filtrar alertas (Menos de 30 días o ya vencidos)
         alertas_rt = df_api_global[dias_rt <= 30][['nombre', 'nombre_faena']].copy()
