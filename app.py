@@ -8,16 +8,20 @@ import concurrent.futures
 # ==========================================
 # 1. CONFIGURACIÓN DE TUS ENLACES Y CLAVES
 # ==========================================
-GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"] 
+st.set_page_config(page_title="Copiloto de Equipos", layout="wide", page_icon="🚜")
+
+try:
+    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"] 
+except Exception:
+    GEMINI_API_KEY = "PEGA_TU_KEY_DE_GEMINI_AQUI_SI_NO_USAS_SECRETS"
+
 API_KEY_DASHBOARD = "CX92wBe9wV2NLUMyFE6PzvcyqTWyBPr5"
 
-# TUS LINKS DE GOOGLE DRIVE (Añade más aquí si lo necesitas en el futuro)
+# Tus dos enlaces maestros de Excel en Google Drive
 ENLACES_EXCEL = [
     "https://docs.google.com/spreadsheets/d/1PUlnTUm_CpkvrpVoKJN_3nyD9khxITDV/edit?usp=sharing",
     "https://docs.google.com/spreadsheets/d/1VrDHEb-D7oeypyYdhUpd3_tw_jggTu3K/edit?usp=drive_link&ouid=112672268024787990541&rtpof=true&sd=true"
 ]
-
-st.set_page_config(page_title="Copiloto de Equipos", layout="centered", page_icon="🚜")
 
 # ==========================================
 # 2. FUNCIONES INTELIGENTES Y MOTORES
@@ -29,7 +33,6 @@ def obtener_lista_modelos():
     try:
         modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         modelos_seguros = [m for m in modelos if 'vision' not in m]
-        # Forzar el uso de modelos Flash para velocidad
         flash_models = [m for m in modelos_seguros if 'flash' in m]
         return flash_models + ["models/gemini-1.5-flash", "models/gemini-1.5-flash-latest"]
     except Exception:
@@ -44,10 +47,9 @@ def cargar_multiples_excel(lista_urls):
     total_hojas = 0
     archivos_leidos = 0
     
-    for i, url in enumerate(lista_urls):
+    for url in lista_urls:
         if not url or "PEGA_AQUI" in url:
             continue
-            
         try:
             if "/d/" in url:
                 id_archivo = url.split('/d/')[1].split('/')[0]
@@ -61,7 +63,7 @@ def cargar_multiples_excel(lista_urls):
                     df_hoja['Origen_Datos'] = f"Excel {archivos_leidos} ({nombre_hoja})"
                     df_maestro = pd.concat([df_maestro, df_hoja], ignore_index=True)
         except Exception:
-            pass # Ignoramos errores silenciosamente para no interrumpir
+            pass 
             
     df_maestro = df_maestro.dropna(how='all') 
     return df_maestro, total_hojas, archivos_leidos
@@ -77,16 +79,15 @@ def fetch_api(tipo, zona, api_key):
         return []
     return []
 
-@st.cache_data(ttl=120) # Se actualiza cada 2 minutos
+@st.cache_data(ttl=300) # Se actualiza cada 5 minutos
 def extraer_datos_api_paralelo():
     """Descarga datos de la API escaneando múltiples zonas al mismo tiempo"""
-    tipos = [27, 26, 24, 21, 23, 41] # Tipos comunes según doc: CF, PMO, TP, Gravillero, Nodriza, Tolva
-    zonas = list(range(1, 14)) # Zonas 1 a 13 según documentación
+    tipos = [27, 26, 24, 21, 23, 41] # CF, PMO, TP, Gravillero, Nodriza, Tolva
+    zonas = list(range(1, 14)) 
     
     tareas = []
     datos_totales = []
     
-    # Usamos ThreadPoolExecutor para hacer decenas de consultas en 1 segundo
     with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
         for t in tipos:
             for z in zonas:
@@ -109,30 +110,84 @@ def filtrar_por_equipo(df, nombre_equipo):
     return df[mask]
 
 # ==========================================
-# 3. INTERFAZ DE LA APLICACIÓN (UI)
+# 3. INTERFAZ DE LA APLICACIÓN (UI) Y ALERTAS
 # ==========================================
-st.title("🚜 Copiloto de Equipos")
-st.markdown("Consulta el estado, ubicación, historial y **certificaciones en tiempo real**.")
+st.title("🚜 Copiloto de Equipos y Auditoría")
 
-equipo_a_buscar = st.text_input("🔍 Ingresa el nombre o código del equipo (Ej: Quadra-1049, Auger-165):")
+# --- MÓDULO DE ALERTAS TEMPRANAS (PROACTIVO) ---
+with st.spinner("Escaneando sistema central para alertas de flota..."):
+    df_api_global = extraer_datos_api_paralelo()
 
-if st.button("Consultar Estado Actual"):
+if not df_api_global.empty:
+    try:
+        hoy = pd.Timestamp(datetime.now().date())
+        
+        # Asegurar que las columnas existan
+        cols_necesarias = ['rev_fecha_expiracion', 'ser_fecha_expiracion', 'dgmn_fecha_expiracion', 'nombre', 'nombre_faena']
+        for col in cols_necesarias:
+            if col not in df_api_global.columns:
+                df_api_global[col] = None
+        
+        # Calcular días restantes
+        dias_rt = (pd.to_datetime(df_api_global['rev_fecha_expiracion'], errors='coerce') - hoy).dt.days
+        dias_sngm = (pd.to_datetime(df_api_global['ser_fecha_expiracion'], errors='coerce') - hoy).dt.days
+        dias_dgmn = (pd.to_datetime(df_api_global['dgmn_fecha_expiracion'], errors='coerce') - hoy).dt.days
+        
+        # Filtrar alertas (Menos de 30 días o ya vencidos)
+        alertas_rt = df_api_global[dias_rt <= 30][['nombre', 'nombre_faena']].copy()
+        alertas_rt['Dias'] = dias_rt[dias_rt <= 30]
+        
+        alertas_sngm = df_api_global[dias_sngm <= 30][['nombre', 'nombre_faena']].copy()
+        alertas_sngm['Dias'] = dias_sngm[dias_sngm <= 30]
+        
+        alertas_dgmn = df_api_global[dias_dgmn <= 30][['nombre', 'nombre_faena']].copy()
+        alertas_dgmn['Dias'] = dias_dgmn[dias_dgmn <= 30]
+        
+        total_alertas = len(alertas_rt) + len(alertas_sngm) + len(alertas_dgmn)
+        
+        if total_alertas > 0:
+            with st.expander(f"🚨 {total_alertas} Alertas Críticas de Cumplimiento (Próximos 30 días)", expanded=True):
+                c1, c2, c3 = st.columns(3)
+                
+                with c1:
+                    st.error(f"📄 Revisión Técnica ({len(alertas_rt)} equipos)")
+                    for _, row in alertas_rt.iterrows():
+                        estado = "VENCIDO" if row['Dias'] < 0 else f"Quedan {int(row['Dias'])} días"
+                        st.markdown(f"**{row['nombre']}** ({row['nombre_faena']}) - {estado}")
+                        
+                with c2:
+                    st.warning(f"⛏️ Sernageomin ({len(alertas_sngm)} equipos)")
+                    for _, row in alertas_sngm.iterrows():
+                        estado = "VENCIDO" if row['Dias'] < 0 else f"Quedan {int(row['Dias'])} días"
+                        st.markdown(f"**{row['nombre']}** ({row['nombre_faena']}) - {estado}")
+                        
+                with c3:
+                    st.info(f"💣 DGMN ({len(alertas_dgmn)} equipos)")
+                    for _, row in alertas_dgmn.iterrows():
+                        estado = "VENCIDO" if row['Dias'] < 0 else f"Quedan {int(row['Dias'])} días"
+                        st.markdown(f"**{row['nombre']}** ({row['nombre_faena']}) - {estado}")
+    except Exception as e:
+        pass # Fallback silencioso si falla la lógica de fechas
+
+st.markdown("---")
+st.markdown("### 🔍 Búsqueda y Auditoría Individual")
+equipo_a_buscar = st.text_input("Ingresa el nombre o código del equipo (Ej: Quadra-1049, Auger-165):")
+
+if st.button("Consultar y Auditar Equipo"):
     if not equipo_a_buscar:
         st.warning("⚠️ Por favor, escribe un equipo para buscar.")
     else:
-        with st.spinner(f'Consultando Excel de Drive y API en tiempo real buscando a {equipo_a_buscar}...'):
+        with st.spinner(f'Extrayendo datos de Drive y cruzando con API en vivo para {equipo_a_buscar}...'):
             
-            # 1. Leer Excels
+            # 1. Leer Excels de Drive
             df_excel, cant_hojas, cant_archivos = cargar_multiples_excel(ENLACES_EXCEL)
             datos_excel = filtrar_por_equipo(df_excel, equipo_a_buscar)
             
-            # 2. Leer API
-            df_api = extraer_datos_api_paralelo()
+            # 2. Leer API y filtrar equipo
             datos_api = pd.DataFrame()
-            if not df_api.empty and 'nombre' in df_api.columns:
-                # Buscamos coincidencias en la API
-                mask_api = df_api['nombre'].astype(str).str.lower().str.contains(equipo_a_buscar.lower(), na=False)
-                datos_api = df_api[mask_api]
+            if not df_api_global.empty and 'nombre' in df_api_global.columns:
+                mask_api = df_api_global['nombre'].astype(str).str.lower().str.contains(equipo_a_buscar.lower(), na=False)
+                datos_api = df_api_global[mask_api]
 
             # Unir resultados
             if datos_excel.empty and datos_api.empty:
@@ -140,40 +195,43 @@ if st.button("Consultar Estado Actual"):
                 st.caption("Tip: Intenta buscar solo el número (Ej: 1049 en vez de Quadra-1049)")
                 st.stop()
 
-            st.success(f"✅ Conexión Exitosa. Excels analizados: {cant_archivos}. Datos en vivo desde la API capturados.")
-            st.info(f"🔍 Registros encontrados: {len(datos_excel)} en Historial (Excel) y {len(datos_api)} en Sistema Vivo (API).")
+            st.success(f"✅ Conexión Exitosa. Se cruzaron datos de {cant_archivos} Excels con el sistema en tiempo real.")
             
             fecha_actual = datetime.now().strftime("%d de %B de %Y")
-            
-            # Preparamos el contexto enviando las dos tablas juntas
-            contexto = f"--- DATOS EXCEL (Histórico y Planificación) ---\n{datos_excel.to_string()}\n\n"
-            contexto += f"--- DATOS API (Tiempo Real) ---\n{datos_api.to_string()}\n"
+            contexto = f"--- DATOS EXCEL ---\n{datos_excel.to_string()}\n\n"
+            contexto += f"--- DATOS API (SISTEMA VIVO) ---\n{datos_api.to_string()}\n"
             
             instruccion = f"""
-            Eres un sistema automático que genera reportes directos de auditoría de maquinaria. Hoy es {fecha_actual}.
-            Tu función es leer los DATOS EXCEL y DATOS API del equipo '{equipo_a_buscar}' y rellenar estrictamente esta plantilla.
+            Eres un auditor estricto de bases de datos de equipos pesados. Hoy es {fecha_actual}.
+            Tu función es leer los DATOS EXCEL y los DATOS API del equipo '{equipo_a_buscar}' y rellenar estrictamente esta plantilla.
             
-            REGLA ABSOLUTA: Tu respuesta debe ser ÚNICAMENTE el texto de la plantilla completada. NO expliques tu razonamiento. NO saludes. Empieza desde el icono del tractor.
-            Usa los datos de la API para la sección de certificaciones (rev_fecha_expiracion, dgmn_fecha_expiracion, ser_fecha_expiracion, horas_ult). Si un dato no existe, escribe 'No registrado'.
+            REGLAS ABSOLUTAS: 
+            1. Tu respuesta debe ser ÚNICAMENTE el texto de la plantilla completada. NO expliques tu razonamiento.
+            2. Si un dato no existe, escribe 'No registrado'.
+            3. CRUZA Y COMPARA la ubicación del Excel contra la de la API para la auditoría.
+            4. Revisa las fechas (Ej: 2026-07-07) comparadas con HOY ({fecha_actual}) para deducir el estado lógico.
             
             🚜 1. Datos Básicos del Equipo:
             - Marca y Modelo: [Extraer]
-            - PPU (Patente): [Extraer]
-            - Año: [Extraer]
+            - PPU: [Extraer]
+            - Año / VIN: [Extraer]
+            - Sistema de Control: [Extraer del campo 'control' en la API o Excel]
+            - Capacidades: [Extraer si aparece en la base de datos]
             
-            📅 2. Estado de Mantenimiento y OT (Cruce Histórico):
-            - Situación real a hoy ({fecha_actual}): [Deducir si está operativo o en taller según fechas]
-            - Última/Próxima Actividad Programada: [Actividad, Fecha y Estatus]
+            📅 2. Estado de Planificación y OT (Cruce Cronológico):
+            - Situación real a hoy ({fecha_actual}): [Deducir si está en faena o en taller basado en si la fecha de su último MP ya pasó]
+            - Última / Próxima Actividad Programada: [Actividad, Fecha y Estatus. Ignora las que ya pasaron hace mucho tiempo]
             
-            📍 3. Ubicación:
-            - Faena / Zona Actual: [Extraer de 'nombre_faena' o 'ultimo_lugar' de la API]
+            📍 3. Ubicación y Auditoría de Congruencia:
+            - Ubicación según Excel (Manual): [Extraer Faena/Ubicación]
+            - Ubicación según Sistema (API): [Extraer 'nombre_faena' o 'nombre_zona']
+            - ⚠️ Alerta de Congruencia: [Compara ambas ubicaciones. Si coinciden, escribe "✅ Sistemas congruentes". Si son diferentes, escribe "❌ INCONGRUENCIA DETECTADA: El sistema vivo indica una ubicación distinta al registro de Excel. Revisar planificación."]
             
-            🛡️ 4. Cumplimiento y Horómetro (Datos en Tiempo Real API):
-            - Estado Sistema Vivo: [Extraer de 'nombre_es' o 'ultimo_estado' en la API]
-            - Horómetro / Kms Actual: [Extraer de 'horas_ult' o 'incremento_diario' en la API]
-            - Vencimiento Revisión Técnica (RT): [Extraer de 'rev_fecha_expiracion' en la API]
-            - Vencimiento Sernageomin: [Extraer de 'ser_fecha_expiracion' en la API]
-            - Vencimiento DGMN: [Extraer de 'dgmn_fecha_expiracion' en la API]
+            🛡️ 4. Cumplimiento y Horómetro (Datos en Vivo API):
+            - Horómetro Actual (horas_ult): [Extraer]
+            - Vencimiento Revisión Técnica (RT): [Extraer fecha]
+            - Vencimiento Sernageomin: [Extraer fecha]
+            - Vencimiento DGMN: [Extraer fecha]
             
             DATOS A ANALIZAR:
             {contexto}
@@ -188,7 +246,7 @@ if st.button("Consultar Estado Actual"):
                         modelo_prueba = genai.GenerativeModel(nombre_modelo)
                         respuesta = modelo_prueba.generate_content(
                             instruccion,
-                            generation_config={"temperature": 0.0} # Temperatura 0 para formato estricto
+                            generation_config={"temperature": 0.0} 
                         )
                         modelo_exitoso = nombre_modelo
                         break 
@@ -196,14 +254,13 @@ if st.button("Consultar Estado Actual"):
                         continue 
                 
                 if respuesta:
-                    st.success("🤖 Reporte generado con Inteligencia Artificial:")
                     st.markdown(respuesta.text)
-                    st.caption(f"✨ Análisis generado usando: {modelo_exitoso} | Datos API y Excel integrados.")
+                    st.caption(f"✨ Análisis generado automáticamente por IA (Modelo: {modelo_exitoso})")
                     
-                    with st.expander("Ver tablas crudas originales (Para Depuración)"):
-                        st.write("Datos API (Tiempo Real):")
+                    with st.expander("Ver tablas originales crudas (Modo Desarrollador)"):
+                        st.write("Datos API:")
                         st.dataframe(datos_api)
-                        st.write("Datos Excel (Histórico):")
+                        st.write("Datos Excel:")
                         st.dataframe(datos_excel)
                 else:
                     st.error("Los modelos de IA están saturados. Intenta de nuevo en unos segundos.")
@@ -212,4 +269,4 @@ if st.button("Consultar Estado Actual"):
                 st.error(f"Hubo un error con la IA: {e}")
 
 st.divider()
-st.caption("Los datos se obtienen en tiempo real fusionando Excel en Cloud y la API del Dashboard (v1.0)")
+st.caption("Datos sincronizados vía Google Drive & Dashboard API (v2.5 Proactiva)")
