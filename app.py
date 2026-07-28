@@ -179,10 +179,10 @@ with tab_alertas:
             df_fabrica = df_faena_alerta[df_faena_alerta['nombre'].astype(str).str.contains('AUGER|QUADRA', case=False, na=False)]
             
             # Evaluar operativos: Lugar debe ser 'Faena' y NO debe estar en 'Catastrofico'
-            # Los correctivos en faena los contamos como dentro del contrato pero lanzamos alerta
             mask_lugar = df_fabrica['Lugar_Deducido'].str.lower() == 'faena'
             mask_estado = ~df_fabrica['Estado_Deducido'].str.lower().str.contains('catastr', na=False)
             
+            # El correctivo en faena sigue sumando al contrato, por lo que NO lo excluimos del conteo de "operativos"
             cant_operativos = len(df_fabrica[mask_lugar & mask_estado])
             requeridos = info['Contrato']
             
@@ -204,16 +204,28 @@ with tab_alertas:
                 })
                 
         if alertas_contrato_rojas or alertas_contrato_amarillas or alertas_correctivas:
-            # Rojas (Fuera de contrato)
-            for alerta in alertas_contrato_rojas:
-                st.error(f"🔴 **FUERA DE CONTRATO en {alerta['faena']}**: Tienes **{alerta['operativos']}** operativos de **{alerta['requeridos']}** requeridos. ¡Falta {alerta['faltan']} equipo(s)!")
-            # Amarillas (En el límite)
-            for alerta in alertas_contrato_amarillas:
-                st.warning(f"🟡 **ALERTA en {alerta['faena']}**: Estás justo en el límite (**{alerta['operativos']}/{alerta['requeridos']}**). Si falla 1 equipo más, quedas fuera de contrato.")
-            # Avisos de Correctivos pendientes
-            for alerta in alertas_correctivas:
-                nombres = ", ".join(alerta['equipos'])
-                st.info(f"🔧 **Atención en {alerta['faena']}**: Tienes {len(alerta['equipos'])} equipo(s) en CORRECTIVO que deben ser atendidos a la brevedad: {nombres}.")
+            
+            todas_alertas = []
+            # Consolidamos todas las alertas en una lista para armar el grid
+            for a in alertas_contrato_rojas:
+                todas_alertas.append({"tipo": "error", "faena": a['faena'], "faltan": a['faltan'], "op": a['operativos'], "req": a['requeridos']})
+            for a in alertas_contrato_amarillas:
+                todas_alertas.append({"tipo": "warning", "faena": a['faena'], "op": a['operativos'], "req": a['requeridos']})
+            for a in alertas_correctivas:
+                todas_alertas.append({"tipo": "info", "faena": a['faena'], "equipos": a['equipos']})
+            
+            # Crear cuadrícula de 4 columnas (Cuadrados compactos)
+            columnas_grid = st.columns(4)
+            for i, alerta in enumerate(todas_alertas):
+                # Distribuir secuencialmente en las columnas
+                with columnas_grid[i % 4]:
+                    if alerta["tipo"] == "error":
+                        st.error(f"**{alerta['faena']}**\n\n🔴 Faltan: **{alerta['faltan']}**\n\n*Op: {alerta['op']} de {alerta['req']}*")
+                    elif alerta["tipo"] == "warning":
+                        st.warning(f"**{alerta['faena']}**\n\n🟡 Al límite\n\n*Op: {alerta['op']} de {alerta['req']}*")
+                    elif alerta["tipo"] == "info":
+                        nombres = ", ".join(alerta['equipos'])
+                        st.info(f"**{alerta['faena']}**\n\n🔧 En Taller:\n\n*{nombres}*")
         else:
             st.success("✅ Excelente. Todos los contratos tienen los equipos operativos requeridos y no hay equipos en correctivo.")
             
