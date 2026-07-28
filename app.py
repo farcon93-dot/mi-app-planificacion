@@ -17,7 +17,7 @@ except Exception:
 
 API_KEY_DASHBOARD = "CX92wBe9wV2NLUMyFE6PzvcyqTWyBPr5"
 
-# Tus enlaces maestros de Excel en Google Drive (Actualizados por Power Automate)
+# Tus enlaces maestros de Excel en Google Drive
 ENLACES_EXCEL = [
     "https://docs.google.com/spreadsheets/d/1PUlnTUm_CpkvrpVoKJN_3nyD9khxITDV/edit?usp=sharing",
     "https://docs.google.com/spreadsheets/d/1VrDHEb-D7oeypyYdhUpd3_tw_jggTu3K/edit?usp=drive_link&ouid=112672268024787990541&rtpof=true&sd=true"
@@ -79,7 +79,7 @@ def fetch_api(tipo, zona, api_key):
         return []
     return []
 
-@st.cache_data(ttl=300) # Se actualiza cada 5 minutos automáticamente
+@st.cache_data(ttl=300)
 def extraer_datos_api_paralelo():
     """Descarga datos de la API escaneando múltiples zonas al mismo tiempo"""
     tipos = [27, 26, 24, 21, 23, 41] # CF, PMO, TP, Gravillero, Nodriza, Tolva
@@ -110,16 +110,14 @@ def filtrar_por_equipo(df, nombre_equipo):
     return df[mask]
 
 # ==========================================
-# 3. INTERFAZ Y PRECARGA DE DATOS (MÁXIMA VELOCIDAD)
+# 3. INTERFAZ Y PRECARGA DE DATOS
 # ==========================================
 st.title("🚜 Centro de Control: Flota y Auditoría")
 
-# La carga de datos ahora es global. Así los botones responden al instante.
 with st.spinner("Sincronizando Sistema Vivo y Bases de Excel... (Esto puede tomar unos segundos la primera vez)"):
     df_api_global = extraer_datos_api_paralelo()
     df_excel_global, cant_hojas, cant_archivos = cargar_multiples_excel(ENLACES_EXCEL)
 
-# Aseguramos que la API tenga todas las columnas antes de operar
 if not df_api_global.empty:
     cols_necesarias = [
         'rev_fecha_expiracion', 'ser_fecha_expiracion', 'dgmn_fecha_expiracion', 
@@ -130,7 +128,6 @@ if not df_api_global.empty:
         if col not in df_api_global.columns:
             df_api_global[col] = None
 
-    # Lógica Deductiva del Sistema: Si está vacío, asumimos que está OK y en Faena
     df_api_global['ultimo_estado'] = df_api_global['nombre_es'].fillna(df_api_global['ultimo_estado']).fillna('OK')
     df_api_global['ultimo_estado'] = df_api_global['ultimo_estado'].replace(['', 'None', 'nan'], 'OK')
     
@@ -152,14 +149,12 @@ with tab_alertas:
     if df_api_global.empty:
         st.warning("No se pudieron cargar los datos de la API para generar las alertas.")
     else:
-        # Calcular días restantes forzando UTC puro para evitar el TypeError
         hoy = pd.Timestamp.utcnow().normalize()
         
         dias_rt = (pd.to_datetime(df_api_global['rev_fecha_expiracion'], errors='coerce', utc=True).dt.normalize() - hoy).dt.days
         dias_sngm = (pd.to_datetime(df_api_global['ser_fecha_expiracion'], errors='coerce', utc=True).dt.normalize() - hoy).dt.days
         dias_dgmn = (pd.to_datetime(df_api_global['dgmn_fecha_expiracion'], errors='coerce', utc=True).dt.normalize() - hoy).dt.days
         
-        # Filtrar alertas (Menos de 30 días o ya vencidos)
         alertas_rt = df_api_global[dias_rt <= 30][['nombre', 'nombre_faena']].copy()
         alertas_rt['Dias'] = dias_rt[dias_rt <= 30]
         
@@ -202,7 +197,6 @@ with tab_equipos:
         else:
             with st.spinner(f'Analizando historial con IA para {equipo_a_buscar}...'):
                 
-                # Búsqueda instántanea en la caché cargada previamente
                 datos_excel = filtrar_por_equipo(df_excel_global, equipo_a_buscar)
                 
                 datos_api = pd.DataFrame()
@@ -210,7 +204,6 @@ with tab_equipos:
                     mask_api = df_api_global['nombre'].astype(str).str.lower().str.contains(equipo_a_buscar.lower(), na=False)
                     datos_api = df_api_global[mask_api]
 
-                # Unir resultados
                 if datos_excel.empty and datos_api.empty:
                     st.error(f"No se encontró ninguna coincidencia exacta para: {equipo_a_buscar}")
                     st.caption("Tip: Intenta buscar solo el número (Ej: 1049 en vez de Quadra-1049)")
@@ -247,7 +240,7 @@ with tab_equipos:
                     - ⚠️ Alerta de Congruencia: [Compara ambas ubicaciones. Si coinciden o tienen sentido, escribe "✅ Sistemas congruentes". Si son diferentes (ej. Excel dice Chuquicamata y API dice Pelambres), escribe "❌ INCONGRUENCIA DETECTADA: El sistema vivo indica una ubicación distinta al registro manual. Recomendación: Actualizar Excel."]
                     
                     🛡️ 4. Cumplimiento y Horómetro (Datos en Vivo API):
-                    - Estado Actual del Camión: [Extraer de 'ultimo_estado' de la API (ej: OK, CATASTROFICO, ALERTA 1, etc.)]
+                    - Estado Actual del Camión: [Extraer de 'ultimo_estado' de la API]
                     - Horómetro Actual: [Extraer 'horas_ult' de API] hrs
                     - Vencimiento Revisión Técnica (RT): [Extraer 'rev_fecha_expiracion' de API, limpiar formato de hora si es posible]
                     - Vencimiento Sernageomin: [Extraer 'ser_fecha_expiracion' de API, limpiar formato de hora]
@@ -288,7 +281,7 @@ with tab_equipos:
 with tab_faenas:
     st.header("📍 Resumen Operativo por Faena")
     
-    # --- DICCIONARIO DE CONTRATOS (Camiones Fábrica y Back Up) ---
+    # Diccionario de Contratos
     CONTRATOS_FAENA = {
         "Centinela": {"Segmento": 1, "Contrato": 13, "Back Up": 3},
         "Collahuasi": {"Segmento": 1, "Contrato": 6, "Back Up": 2},
@@ -317,7 +310,6 @@ with tab_faenas:
     if df_api_global.empty:
         st.warning("No hay datos de API disponibles para mostrar las faenas.")
     else:
-        # Extraer lista de faenas únicas eliminando nulos
         faenas_disponibles = sorted(df_api_global['nombre_faena'].dropna().unique().tolist())
         
         faena_seleccionada = st.selectbox(
@@ -327,8 +319,7 @@ with tab_faenas:
         
         if faena_seleccionada != "--- Seleccionar Faena ---":
             
-            # --- MOSTRAR INFORMACIÓN DEL CONTRATO (SI EXISTE PARA ESTA FAENA) ---
-            # Buscamos si la faena seleccionada coincide con alguna de nuestro diccionario
+            # --- MOSTRAR INFORMACIÓN DEL CONTRATO ---
             info_contrato = None
             for nombre_planta, datos in CONTRATOS_FAENA.items():
                 if nombre_planta.lower() in faena_seleccionada.lower():
@@ -342,8 +333,41 @@ with tab_faenas:
                 col2.metric("Camiones Fábrica (Contrato)", info_contrato['Contrato'])
                 col3.metric("Equipos Back Up Requeridos", info_contrato['Back Up'])
                 st.divider()
-            # --------------------------------------------------------------------
-
+            
+            # --- MOSTRAR TABLA DE EQUIPOS ---
             df_faena = df_api_global[df_api_global['nombre_faena'] == faena_seleccionada].copy()
             
             st.success(f"🚜 {len(df_faena)} equipos totales reportados actualmente en **{faena_seleccionada}**")
+            
+            # Lógica Deductiva de Estado y Lugar
+            df_faena['Estado_Deducido'] = df_faena['nombre_es'].fillna(df_faena['ultimo_estado']).fillna('OK')
+            df_faena['Estado_Deducido'] = df_faena['Estado_Deducido'].replace(['', 'None', 'nan'], 'OK')
+            
+            df_faena['Lugar_Deducido'] = df_faena['ultimo_lugar'].fillna('Faena')
+            df_faena['Lugar_Deducido'] = df_faena['Lugar_Deducido'].replace(['', 'None', 'nan'], 'Faena')
+            
+            # Limpiar y seleccionar columnas útiles para mostrar
+            cols_vista = {
+                'nombre': 'Equipo',
+                'marca_nombre': 'Marca',
+                'Lugar_Deducido': 'Lugar/Ubicación',
+                'horas_ult': 'Horómetro (hrs)',
+                'Estado_Deducido': 'Estado Actual',
+                'rev_fecha_expiracion': 'Venc. RT',
+                'ser_fecha_expiracion': 'Venc. SNGM',
+                'dgmn_fecha_expiracion': 'Venc. DGMN'
+            }
+            
+            cols_existentes = [c for c in cols_vista.keys() if c in df_faena.columns]
+            df_mostrar = df_faena[cols_existentes].rename(columns=cols_vista)
+            
+            # Formatear fechas a DD/MM/AAAA usando zona horaria limpia
+            columnas_fechas = ['Venc. RT', 'Venc. SNGM', 'Venc. DGMN']
+            for col in columnas_fechas:
+                if col in df_mostrar.columns:
+                    df_mostrar[col] = pd.to_datetime(df_mostrar[col], errors='coerce', utc=True).dt.strftime('%d/%m/%Y')
+            
+            df_mostrar = df_mostrar.fillna("-")
+            
+            # Dibujar la tabla finalmente
+            st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
