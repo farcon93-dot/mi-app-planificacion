@@ -164,10 +164,10 @@ with tab_alertas:
     if df_api_global.empty:
         st.warning("No se pudieron cargar los datos de la API para generar las alertas.")
     else:
-        # --- NUEVA SECCIÓN: AUDITORÍA DE CONTRATOS ---
         st.subheader("⚖️ Estado de Cumplimiento de Contratos (Camiones Fábrica)")
         alertas_contrato_rojas = []
         alertas_contrato_amarillas = []
+        alertas_correctivas = []
         
         for faena, info in CONTRATOS_FAENA.items():
             # Filtro exacto por nombre de faena
@@ -178,12 +178,21 @@ with tab_alertas:
             # Filtrar solo Auger y Quadra
             df_fabrica = df_faena_alerta[df_faena_alerta['nombre'].astype(str).str.contains('AUGER|QUADRA', case=False, na=False)]
             
-            # Evaluar operativos: Lugar debe ser 'Faena' y no debe estar en 'Correctivo' o 'Catastrofico'
+            # Evaluar operativos: Lugar debe ser 'Faena' y NO debe estar en 'Catastrofico'
+            # (El estado 'Correctivo' ahora SÍ se considera para sumar al contrato)
             mask_lugar = df_fabrica['Lugar_Deducido'].str.lower() == 'faena'
-            mask_estado = ~df_fabrica['Estado_Deducido'].str.lower().str.contains('correctivo|catastr', na=False)
+            mask_estado = ~df_fabrica['Estado_Deducido'].str.lower().str.contains('catastr', na=False)
             
             cant_operativos = len(df_fabrica[mask_lugar & mask_estado])
             requeridos = info['Contrato']
+            
+            # Detectar específicamente equipos en 'Correctivo' para la nueva alerta de atención
+            mask_correctivo = mask_lugar & df_fabrica['Estado_Deducido'].str.lower().str.contains('correctivo', na=False)
+            equipos_en_correctivo = df_fabrica[mask_correctivo]['nombre'].tolist()
+            if equipos_en_correctivo:
+                alertas_correctivas.append({
+                    'faena': faena, 'equipos': equipos_en_correctivo
+                })
             
             if cant_operativos < requeridos:
                 alertas_contrato_rojas.append({
@@ -194,17 +203,22 @@ with tab_alertas:
                     'faena': faena, 'operativos': cant_operativos, 'requeridos': requeridos
                 })
                 
-        if alertas_contrato_rojas or alertas_contrato_amarillas:
+        if alertas_contrato_rojas or alertas_contrato_amarillas or alertas_correctivas:
+            # Primero mostramos las rojas (Fuera de contrato)
             for alerta in alertas_contrato_rojas:
                 st.error(f"🔴 **FUERA DE CONTRATO en {alerta['faena']}**: Tienes **{alerta['operativos']}** operativos de **{alerta['requeridos']}** requeridos. ¡Falta {alerta['faltan']} equipo(s)!")
+            # Luego las amarillas (En el límite)
             for alerta in alertas_contrato_amarillas:
-                st.warning(f"🟡 **ALERTA CRÍTICA en {alerta['faena']}**: Estás justo en el límite (**{alerta['operativos']}/{alerta['requeridos']}**). Si falla 1 equipo más, quedas fuera de contrato.")
+                st.warning(f"🟡 **ALERTA en {alerta['faena']}**: Estás justo en el límite (**{alerta['operativos']}/{alerta['requeridos']}**). Si falla 1 equipo más, quedas fuera de contrato.")
+            # Luego los avisos informativos sobre correctivos pendientes
+            for alerta in alertas_correctivas:
+                nombres = ", ".join(alerta['equipos'])
+                st.info(f"🔧 **Atención en {alerta['faena']}**: Tienes {len(alerta['equipos'])} equipo(s) en CORRECTIVO que deben ser atendidos a la brevedad: {nombres}.")
         else:
-            st.success("✅ Excelente. Todos los contratos tienen los equipos operativos requeridos (Margen de Back Up seguro).")
+            st.success("✅ Excelente. Todos los contratos tienen los equipos operativos requeridos y no hay equipos en correctivo.")
             
         st.divider()
 
-        # --- SECCIÓN EXISTENTE: VENCIMIENTOS LEGALES ---
         st.subheader("📅 Certificaciones por Vencer (Próximos 30 días)")
         hoy = pd.Timestamp.utcnow().normalize()
         
@@ -323,7 +337,7 @@ with tab_faenas:
     else:
         faenas_disponibles = sorted(df_api_global['nombre_faena'].dropna().unique().tolist())
         faena_seleccionada = st.selectbox(
-            "Seleccione una Faena para ver los equipos presentes:",
+            "Seleccione una Faena para ver los equipos presentes (Datos en vivo desde el Sistema):",
             ["--- Seleccionar Faena ---"] + faenas_disponibles
         )
         
@@ -342,11 +356,11 @@ with tab_faenas:
                 col2.metric("Camiones Fábrica (Contrato)", info_contrato['Contrato'])
                 col3.metric("Equipos Back Up Requeridos", info_contrato['Back Up'])
                 st.divider()
-            
-            # Tabla de Equipos
+                
             df_faena = df_api_global[df_api_global['nombre_faena'] == faena_seleccionada].copy()
             st.success(f"🚜 {len(df_faena)} equipos totales reportados actualmente en **{faena_seleccionada}**")
             
+            # Limpiar y seleccionar columnas útiles para mostrar
             cols_vista = {
                 'nombre': 'Equipo',
                 'marca_nombre': 'Marca',
@@ -358,20 +372,28 @@ with tab_faenas:
                 'dgmn_fecha_expiracion': 'Venc. DGMN'
             }
             
+            # Asegurar que existan las columnas antes de renombrar
             cols_existentes = [c for c in cols_vista.keys() if c in df_faena.columns]
             df_mostrar = df_faena[cols_existentes].rename(columns=cols_vista)
             
+            # Formatear fechas a DD/MM/AAAA
             columnas_fechas = ['Venc. RT', 'Venc. SNGM', 'Venc. DGMN']
             for col in columnas_fechas:
                 if col in df_mostrar.columns:
-                    df_mostrar[col] = pd.to_datetime(df_mostrar[col], errors='coerce', utc=True).dt.strftime('%d/%m/%Y')
+                    # Convertir a fecha y formatear a DD/MM/YYYY (ej: 06/12/2026)
+                    df_mostrar[col] = pd.to_datetime(df_mostrar[col], errors='coerce').dt.strftime('%d/%m/%Y')
             
+            # Rellenar los valores nulos o "None" por un guión para limpiar la vista
             df_mostrar = df_mostrar.fillna("-")
             
-            # Formato Visual (Ajustado al texto y Centrado)
+            # ==========================================
+            # FORMATO VISUAL: Alinear al centro y ajustar ancho
+            # ==========================================
+            # Identificamos qué columnas queremos centrar
             columnas_centradas = ['Marca', 'Lugar/Ubicación', 'Horómetro (hrs)', 'Estado Actual', 'Venc. RT', 'Venc. SNGM', 'Venc. DGMN']
             columnas_a_estilizar = [c for c in columnas_centradas if c in df_mostrar.columns]
             
+            # Aplicamos CSS a los datos (td) y a las cabeceras (th)
             df_estilizado = df_mostrar.style.set_properties(
                 subset=columnas_a_estilizar, 
                 **{'text-align': 'center'}
@@ -379,4 +401,5 @@ with tab_faenas:
                 {'selector': 'th', 'props': [('text-align', 'center')]}
             ])
             
+            # Mostramos la tabla (use_container_width=False hace que las columnas se ajusten al texto)
             st.dataframe(df_estilizado, use_container_width=False, hide_index=True)
