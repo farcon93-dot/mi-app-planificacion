@@ -79,7 +79,7 @@ def fetch_api(tipo, zona, api_key):
         return []
     return []
 
-@st.cache_data(ttl=300) # Se actualiza cada 5 minutos
+@st.cache_data(ttl=300) # Se actualiza cada 5 minutos automáticamente
 def extraer_datos_api_paralelo():
     """Descarga datos de la API escaneando múltiples zonas al mismo tiempo"""
     tipos = [27, 26, 24, 21, 23, 41] # CF, PMO, TP, Gravillero, Nodriza, Tolva
@@ -110,15 +110,16 @@ def filtrar_por_equipo(df, nombre_equipo):
     return df[mask]
 
 # ==========================================
-# 3. INTERFAZ DE LA APLICACIÓN (UI)
+# 3. INTERFAZ Y PRECARGA DE DATOS (MÁXIMA VELOCIDAD)
 # ==========================================
 st.title("🚜 Centro de Control: Flota y Auditoría")
 
-# Descargar API globalmente de forma silenciosa para usarla en todos los botones/pestañas
-with st.spinner("Sincronizando con el sistema central en tiempo real..."):
+# La carga de datos ahora es global. Así los botones responden al instante.
+with st.spinner("Sincronizando Sistema Vivo y Bases de Excel... (Esto puede tomar unos segundos la primera vez)"):
     df_api_global = extraer_datos_api_paralelo()
+    df_excel_global, cant_hojas, cant_archivos = cargar_multiples_excel(ENLACES_EXCEL)
 
-# Formatear columnas básicas por si vienen vacías
+# Aseguramos que la API tenga todas las columnas antes de operar
 if not df_api_global.empty:
     cols_necesarias = [
         'rev_fecha_expiracion', 'ser_fecha_expiracion', 'dgmn_fecha_expiracion', 
@@ -129,7 +130,13 @@ if not df_api_global.empty:
         if col not in df_api_global.columns:
             df_api_global[col] = None
 
-# Crear el menú principal de navegación usando Tabs (Pestañas/Botones)
+    # Lógica Deductiva del Sistema: Si está vacío, asumimos que está OK y en Faena
+    df_api_global['ultimo_estado'] = df_api_global['nombre_es'].fillna(df_api_global['ultimo_estado']).fillna('OK')
+    df_api_global['ultimo_estado'] = df_api_global['ultimo_estado'].replace(['', 'None', 'nan'], 'OK')
+    
+    df_api_global['ultimo_lugar'] = df_api_global['ultimo_lugar'].fillna('Faena')
+    df_api_global['ultimo_lugar'] = df_api_global['ultimo_lugar'].replace(['', 'None', 'nan'], 'Faena')
+
 tab_alertas, tab_equipos, tab_faenas = st.tabs([
     "🚨 Alertas del Sistema", 
     "🔍 Buscar Equipo", 
@@ -145,7 +152,7 @@ with tab_alertas:
     if df_api_global.empty:
         st.warning("No se pudieron cargar los datos de la API para generar las alertas.")
     else:
-        # Calcular días restantes forzando UTC puro para evitar TypeError
+        # Calcular días restantes forzando UTC puro para evitar el TypeError
         hoy = pd.Timestamp.utcnow().normalize()
         
         dias_rt = (pd.to_datetime(df_api_global['rev_fecha_expiracion'], errors='coerce', utc=True).dt.normalize() - hoy).dt.days
@@ -193,13 +200,11 @@ with tab_equipos:
         if not equipo_a_buscar:
             st.warning("⚠️ Por favor, escribe un equipo para buscar.")
         else:
-            with st.spinner(f'Extrayendo datos de Drive y cruzando con API en vivo para {equipo_a_buscar}...'):
+            with st.spinner(f'Analizando historial con IA para {equipo_a_buscar}...'):
                 
-                # 1. Leer Excels de Drive
-                df_excel, cant_hojas, cant_archivos = cargar_multiples_excel(ENLACES_EXCEL)
-                datos_excel = filtrar_por_equipo(df_excel, equipo_a_buscar)
+                # Búsqueda instántanea en la caché cargada previamente
+                datos_excel = filtrar_por_equipo(df_excel_global, equipo_a_buscar)
                 
-                # 2. Buscar en API previamente cargada
                 datos_api = pd.DataFrame()
                 if not df_api_global.empty and 'nombre' in df_api_global.columns:
                     mask_api = df_api_global['nombre'].astype(str).str.lower().str.contains(equipo_a_buscar.lower(), na=False)
@@ -224,30 +229,29 @@ with tab_equipos:
                     1. Tu respuesta debe ser ÚNICAMENTE el texto de la plantilla completada. NO expliques tu razonamiento.
                     2. Si un dato no existe, escribe 'No registrado'.
                     3. CRUZA Y COMPARA la ubicación del Excel contra la de la API para la auditoría.
-                    4. Revisa las fechas comparadas con HOY ({fecha_actual}) para deducir el estado lógico.
                     
                     🚜 1. Datos Básicos del Equipo:
                     - Marca y Modelo: [Extraer]
                     - PPU: [Extraer]
                     - Año / VIN: [Extraer]
-                    - Sistema de Control: [Extraer del campo 'control' en la API o en el Excel]
+                    - Sistema de Control: [Extraer de la columna 'control' en la API o del Excel]
                     - Capacidades: [Extraer si aparece detallado en la base de datos Excel]
                     
-                    📅 2. Estado de Planificación y OT (Cruce Cronológico):
+                    📅 2. Estado de Planificación y OT:
                     - Situación real a hoy ({fecha_actual}): [Deducir si está en faena o en taller basado en fechas]
                     - Última / Próxima Actividad Programada: [Actividad, Fecha y Estatus]
                     
                     📍 3. Ubicación y Auditoría de Congruencia:
                     - Ubicación según Excel (Manual): [Extraer Faena/Ubicación de los Excels]
-                    - Ubicación según Sistema (API): [Extraer 'ultimo_lugar' o 'nombre_faena' de la API]
-                    - ⚠️ Alerta de Congruencia: [Compara ambas ubicaciones. Si coinciden o son lógicamente compatibles, escribe "✅ Sistemas congruentes". Si son diferentes (ej. Excel dice Chuquicamata y API dice Pelambres), escribe "❌ INCONGRUENCIA DETECTADA: El sistema vivo indica una ubicación distinta al registro manual. Recomendación: Actualizar Excel."]
+                    - Ubicación según Sistema (API/GPS): [Extraer 'ultimo_lugar' o 'nombre_faena' de la API]
+                    - ⚠️ Alerta de Congruencia: [Compara ambas ubicaciones. Si coinciden o tienen sentido, escribe "✅ Sistemas congruentes". Si son diferentes (ej. Excel dice Chuquicamata y API dice Pelambres), escribe "❌ INCONGRUENCIA DETECTADA: El sistema vivo indica una ubicación distinta al registro manual. Recomendación: Actualizar Excel."]
                     
                     🛡️ 4. Cumplimiento y Horómetro (Datos en Vivo API):
-                    - Estado Actual del Camión: [Extraer de 'ultimo_estado' en la API (ej: OK, CATASTROFICO, ALERTA 1)]
+                    - Estado Actual del Camión: [Extraer de 'ultimo_estado' de la API (ej: OK, CATASTROFICO, ALERTA 1, etc.)]
                     - Horómetro Actual: [Extraer 'horas_ult' de API] hrs
-                    - Vencimiento Revisión Técnica (RT): [Extraer 'rev_fecha_expiracion' de API]
-                    - Vencimiento Sernageomin: [Extraer 'ser_fecha_expiracion' de API]
-                    - Vencimiento DGMN: [Extraer 'dgmn_fecha_expiracion' de API]
+                    - Vencimiento Revisión Técnica (RT): [Extraer 'rev_fecha_expiracion' de API, limpiar formato de hora si es posible]
+                    - Vencimiento Sernageomin: [Extraer 'ser_fecha_expiracion' de API, limpiar formato de hora]
+                    - Vencimiento DGMN: [Extraer 'dgmn_fecha_expiracion' de API, limpiar formato de hora]
                     
                     DATOS A ANALIZAR:
                     {contexto}
@@ -271,7 +275,7 @@ with tab_equipos:
                         
                         if respuesta:
                             st.markdown(respuesta.text)
-                            st.caption(f"✨ Análisis generado automáticamente por IA (Modelo: {modelo_exitoso})")
+                            st.caption(f"✨ Análisis generado instantáneamente por IA (Modelo: {modelo_exitoso})")
                         else:
                             st.error("Los modelos de IA están saturados. Intenta de nuevo en unos segundos.")
                             
@@ -316,14 +320,13 @@ with tab_faenas:
             cols_existentes = [c for c in cols_vista.keys() if c in df_faena.columns]
             df_mostrar = df_faena[cols_existentes].rename(columns=cols_vista)
             
-            # Formatear fechas para que no se vean como T00:00:00.000Z
+            # Formatear fechas a DD/MM/AAAA (Latino/Chileno)
             columnas_fechas = ['Venc. RT', 'Venc. SNGM', 'Venc. DGMN']
             for col in columnas_fechas:
                 if col in df_mostrar.columns:
-                    # Convertir a fecha y formatear a DD/MM/YYYY (ej: 06/12/2026)
                     df_mostrar[col] = pd.to_datetime(df_mostrar[col], errors='coerce').dt.strftime('%d/%m/%Y')
             
-            # Rellenar los valores nulos o "None" por un guión para limpiar la vista
+            # Rellenar los valores nulos o "None" por un guión para limpiar la vista visualmente
             df_mostrar = df_mostrar.fillna("-")
             
             # Formatear el Dataframe en Streamlit
@@ -334,4 +337,4 @@ with tab_faenas:
             )
 
 st.divider()
-st.caption("Sistema Centralizado de Planificación y Cumplimiento v4.0 | Sincronización en tiempo real")
+st.caption("Sistema Centralizado de Planificación y Cumplimiento v5.0 | Motor Caché de Alta Velocidad")
