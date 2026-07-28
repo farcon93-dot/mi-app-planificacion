@@ -187,13 +187,14 @@ def analizar_movimientos_semana(df_excel, fecha_str):
 # ==========================================
 # 3. INTERFAZ GRÁFICA PRINCIPAL
 # ==========================================
-# Solución definitiva al logo: Usamos un SVG puro público o el oficial, con un onerror que carga un emoji gigante si todo falla.
+# Solución definitiva al logo: Usamos un PNG público de alta compatibilidad. 
+# Si la red lo bloquea, el onerror lo oculta para no mostrar el icono de imagen rota.
 st.markdown(
     """
     <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
-        <img src="https://www.enaex.com/wp-content/themes/enaex/assets/img/logo.svg" 
-             onerror="this.onerror=null; this.src='https://upload.wikimedia.org/wikipedia/commons/8/87/Enaex_logo.svg';" 
-             height="60" style="object-fit: contain;">
+        <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Enaex_logo.svg/512px-Enaex_logo.svg.png" 
+             onerror="this.style.display='none';" 
+             height="55" style="object-fit: contain;">
         <h1 style="margin: 0; padding: 0; font-size: 2.2rem; display: flex; align-items: center; gap: 10px;">
             🚛 Centro de Control: Flota y Auditoría
         </h1>
@@ -375,26 +376,46 @@ with tab_equipos:
                     
                     texto_auditoria = f"Equipo: {nombre_real}\n"
                     
-                    # Columna 1: SISTEMA EN VIVO
+                    # Funciones auxiliares para extracción y limpieza
+                    row_api = df_api_eq.iloc[0] if not df_api_eq.empty else pd.Series()
+                    row_excel = df_excel_eq.iloc[0] if not df_excel_eq.empty else pd.Series()
+
+                    def get_dato_fusionado(campo_api, campos_excel, default="N/A"):
+                        """Si el API no tiene el dato, lo busca en el Excel para evitar mostrar 'None'"""
+                        val = str(row_api.get(campo_api, default)).strip()
+                        if val in ['None', 'nan', '', default, 'N/A'] and not row_excel.empty:
+                            val = obtener_dato_seguro(row_excel, campos_excel, default)
+                        return val if val not in ['None', 'nan', ''] else default
+
+                    def clean_date(d):
+                        """Formatea cualquier fecha al formato chileno DD/MM/YYYY"""
+                        if pd.isna(d) or str(d).strip() in ['None', '', 'nan', 'NaT']: return 'N/A'
+                        try:
+                            return pd.to_datetime(d).strftime('%d/%m/%Y')
+                        except:
+                            return str(d).split('T')[0].split(' ')[0]
+
+                    # Columna 1: SISTEMA EN VIVO (Cruzado con Excel)
                     with col_sis:
                         st.markdown("#### 📡 En Vivo (GPS/Sistema)")
-                        if not df_api_eq.empty:
-                            row = df_api_eq.iloc[0]
-                            ubi = row.get('Lugar_Deducido', 'N/A')
-                            faena = row.get('nombre_faena', 'N/A')
-                            estado = row.get('Estado_Deducido', 'N/A')
-                            hrs = row.get('horas_ult', 'N/A')
-                            patente = row.get('patente', 'N/A')
-                            vin = row.get('vin', row.get('chasis', 'N/A'))
-                            modelo = row.get('modelo', 'N/A')
-                            control = row.get('control', 'N/A')
+                        if not row_api.empty:
+                            ubi = row_api.get('Lugar_Deducido', 'N/A')
+                            faena = row_api.get('nombre_faena', 'N/A')
+                            estado = row_api.get('Estado_Deducido', 'N/A')
                             
-                            # Limpieza rápida de fechas (quitar la hora)
-                            rt = str(row.get('rev_fecha_expiracion', '-')).split(' ')[0]
-                            sngm = str(row.get('ser_fecha_expiracion', '-')).split(' ')[0]
-                            dgmn = str(row.get('dgmn_fecha_expiracion', '-')).split(' ')[0]
+                            # Extracción de Hardware inteligente
+                            patente = get_dato_fusionado('patente', ['Patente', 'Placa', 'PPU'])
+                            modelo = get_dato_fusionado('modelo', ['Modelo', 'Marca/Modelo', 'Tipo'])
+                            vin = get_dato_fusionado('vin', ['VIN', 'Chasis', 'N° Chasis', 'Serie'])
+                            if vin == "N/A": vin = get_dato_fusionado('chasis', ['VIN', 'Chasis', 'N° Chasis', 'Serie'])
+                            hrs = get_dato_fusionado('horas_ult', ['Horómetro', 'Horometro', 'Horas', 'Hrs'])
+                            control = get_dato_fusionado('control', ['Control', 'Sistema Control', 'Sistema'])
                             
-                            st.info(f"**📍 Ubicación:** {ubi} ({faena}) | **⚙️ Estado:** {estado}")
+                            rt = clean_date(row_api.get('rev_fecha_expiracion'))
+                            sngm = clean_date(row_api.get('ser_fecha_expiracion'))
+                            dgmn = clean_date(row_api.get('dgmn_fecha_expiracion'))
+                            
+                            st.info(f"📍 **Ubicación:** {ubi} ({faena}) | ⚙️ **Estado:** {estado}")
                             
                             c1, c2 = st.columns(2)
                             c1.markdown(f"**Patente:** {patente}\n\n**Modelo:** {modelo}\n\n**VIN/Chasis:** {vin}")
@@ -408,19 +429,17 @@ with tab_equipos:
                             st.warning("No hay conexión en vivo para este equipo.")
                             texto_auditoria += "GPS: Sin conexión.\n"
                             
-                    # Columna 2: PLANIFICACIÓN EXCEL
+                    # Columna 2: PLANIFICACIÓN EXCEL (Solo el último registro)
                     with col_plan:
                         st.markdown("#### 📅 Planificación (Último Registro)")
-                        if not df_excel_eq.empty:
-                            # Mostrar SOLO la primera fila (la más reciente/relevante)
-                            row = df_excel_eq.iloc[0]
-                            estatus = obtener_dato_seguro(row, ['Status MP', 'Estatus MP', 'Estado'])
-                            ubicacion_plan = obtener_dato_seguro(row, ['Ubicación', 'Ubicacion', 'Lugar', 'Faena'])
-                            f_ini = obtener_dato_seguro(row, ['Fecha Inici', 'Fecha Inicial'])
-                            f_fin = obtener_dato_seguro(row, ['Fecha Fina', 'Fecha Final', 'Termino'])
-                            comentarios = obtener_dato_seguro(row, ['Estado de equipos', 'Comentarios', 'Comentario', 'Motivo'])
+                        if not row_excel.empty:
+                            estatus = obtener_dato_seguro(row_excel, ['Status MP', 'Estatus MP', 'Estado'])
+                            ubicacion_plan = obtener_dato_seguro(row_excel, ['Ubicación', 'Ubicacion', 'Lugar', 'Faena'])
+                            f_ini = clean_date(obtener_dato_seguro(row_excel, ['Fecha Inici', 'Fecha Inicial']))
+                            f_fin = clean_date(obtener_dato_seguro(row_excel, ['Fecha Fina', 'Fecha Final', 'Termino']))
+                            comentarios = obtener_dato_seguro(row_excel, ['Estado de equipos', 'Comentarios', 'Comentario', 'Motivo'])
                             
-                            st.success(f"**📋 Estatus Taller:** {estatus} | **Ubicación:** {ubicacion_plan}")
+                            st.success(f"📋 **Estatus Taller:** {estatus} | **Ubicación:** {ubicacion_plan}")
                             st.markdown(f"**🗓️ Fechas:** {f_ini} al {f_fin}\n\n**💬 Últimos Trabajos / Comentarios:**\n{comentarios}")
                             
                             texto_auditoria += f"Excel dice: Estatus {estatus}, Ubicación {ubicacion_plan}, Fechas {f_ini} a {f_fin}, Detalle: {comentarios}\n"
@@ -431,7 +450,7 @@ with tab_equipos:
                     st.divider()
                     fichas_generadas.append(texto_auditoria)
 
-            # --- AUDITORÍA IA (Opcional y controlada) ---
+            # --- AUDITORÍA IA ---
             if fichas_generadas:
                 st.markdown("### 🤖 Auditoría Automática (Buscando Incongruencias)")
                 st.caption("La IA cruza la información mostrada arriba para alertar sobre desvíos.")
