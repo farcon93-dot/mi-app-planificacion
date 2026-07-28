@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import google.generativeai as genai
-from datetime import datetime
+from datetime import datetime, timezone
 import requests
 import concurrent.futures
 
@@ -127,7 +127,7 @@ def filtrar_por_equipo(df, nombre_equipo):
 # ==========================================
 st.title("🚜 Centro de Control: Flota y Auditoría")
 
-with st.spinner("Sincronizando Sistema Vivo y Bases de Excel... (Esto puede tomar unos segundos la primera vez)"):
+with st.spinner("Sincronizando Sistema Vivo y Bases de Excel... (Esto toma unos segundos la primera vez)"):
     df_api_global = extraer_datos_api_paralelo()
     df_excel_global, cant_hojas, cant_archivos = cargar_multiples_excel(ENLACES_EXCEL)
 
@@ -170,7 +170,6 @@ with tab_alertas:
         alertas_correctivas = []
         
         for faena, info in CONTRATOS_FAENA.items():
-            # Filtro exacto por nombre de faena
             df_faena_alerta = df_api_global[df_api_global['nombre_faena'].astype(str).str.strip().str.lower() == faena.lower()]
             if df_faena_alerta.empty:
                 continue
@@ -180,10 +179,17 @@ with tab_alertas:
             
             # Evaluar operativos: Lugar debe ser 'Faena' y NO debe estar en 'Catastrofico'
             mask_lugar = df_fabrica['Lugar_Deducido'].str.lower() == 'faena'
-            mask_estado = ~df_fabrica['Estado_Deducido'].str.lower().str.contains('catastr', na=False)
+            mask_catastrofico = df_fabrica['Estado_Deducido'].str.lower().str.contains('catastr', na=False)
+            mask_operativos = mask_lugar & ~mask_catastrofico
             
-            # El correctivo en faena sigue sumando al contrato, por lo que NO lo excluimos del conteo de "operativos"
-            cant_operativos = len(df_fabrica[mask_lugar & mask_estado])
+            # Clasificamos qué equipos están OK y cuáles están Fuera (para los detalles)
+            df_operativos = df_fabrica[mask_operativos]
+            df_fuera = df_fabrica[~mask_operativos]
+            
+            nombres_operativos = df_operativos['nombre'].tolist()
+            nombres_fuera = df_fuera['nombre'].tolist()
+            
+            cant_operativos = len(df_operativos)
             requeridos = info['Contrato']
             
             # Detectar equipos en 'Correctivo' en Faena para la alerta de atención
@@ -196,36 +202,50 @@ with tab_alertas:
             
             if cant_operativos < requeridos:
                 alertas_contrato_rojas.append({
-                    'faena': faena, 'operativos': cant_operativos, 'requeridos': requeridos, 'faltan': requeridos - cant_operativos
+                    'faena': faena, 'operativos': cant_operativos, 'requeridos': requeridos, 'faltan': requeridos - cant_operativos,
+                    'nombres_op': nombres_operativos, 'nombres_fuera': nombres_fuera
                 })
             elif cant_operativos == requeridos:
                 alertas_contrato_amarillas.append({
-                    'faena': faena, 'operativos': cant_operativos, 'requeridos': requeridos
+                    'faena': faena, 'operativos': cant_operativos, 'requeridos': requeridos,
+                    'nombres_op': nombres_operativos, 'nombres_fuera': nombres_fuera
                 })
                 
         if alertas_contrato_rojas or alertas_contrato_amarillas or alertas_correctivas:
-            
             todas_alertas = []
-            # Consolidamos todas las alertas en una lista para armar el grid
             for a in alertas_contrato_rojas:
-                todas_alertas.append({"tipo": "error", "faena": a['faena'], "faltan": a['faltan'], "op": a['operativos'], "req": a['requeridos']})
+                todas_alertas.append({"tipo": "error", "faena": a['faena'], "faltan": a['faltan'], "op": a['operativos'], "req": a['requeridos'], "nombres_op": a['nombres_op'], "nombres_fuera": a['nombres_fuera']})
             for a in alertas_contrato_amarillas:
-                todas_alertas.append({"tipo": "warning", "faena": a['faena'], "op": a['operativos'], "req": a['requeridos']})
+                todas_alertas.append({"tipo": "warning", "faena": a['faena'], "op": a['operativos'], "req": a['requeridos'], "nombres_op": a['nombres_op'], "nombres_fuera": a['nombres_fuera']})
             for a in alertas_correctivas:
                 todas_alertas.append({"tipo": "info", "faena": a['faena'], "equipos": a['equipos']})
             
-            # Crear cuadrícula de 4 columnas (Cuadrados compactos)
-            columnas_grid = st.columns(4)
+            # Crear cuadrícula de 6 columnas (Para hacerlos más pequeños y tipo dashboard)
+            columnas_grid = st.columns(6)
             for i, alerta in enumerate(todas_alertas):
-                # Distribuir secuencialmente en las columnas
-                with columnas_grid[i % 4]:
+                with columnas_grid[i % 6]:
                     if alerta["tipo"] == "error":
-                        st.error(f"**{alerta['faena']}**\n\n🔴 Faltan: **{alerta['faltan']}**\n\n*Op: {alerta['op']} de {alerta['req']}*")
+                        st.error(f"**{alerta['faena']}**\n\n🔴 Faltan: {alerta['faltan']}\n\n*{alerta['op']}/{alerta['req']} Op.*")
+                        with st.expander("Ver detalle"):
+                            st.markdown("✅ **OK:**")
+                            st.caption(", ".join(alerta['nombres_op']) if alerta['nombres_op'] else "Ninguno")
+                            st.markdown("❌ **Fuera:**")
+                            st.caption(", ".join(alerta['nombres_fuera']) if alerta['nombres_fuera'] else "Ninguno")
+                            
                     elif alerta["tipo"] == "warning":
-                        st.warning(f"**{alerta['faena']}**\n\n🟡 Al límite\n\n*Op: {alerta['op']} de {alerta['req']}*")
+                        st.warning(f"**{alerta['faena']}**\n\n🟡 Al límite\n\n*{alerta['op']}/{alerta['req']} Op.*")
+                        with st.expander("Ver detalle"):
+                            st.markdown("✅ **OK:**")
+                            st.caption(", ".join(alerta['nombres_op']) if alerta['nombres_op'] else "Ninguno")
+                            st.markdown("⚠️ **Fuera/Taller:**")
+                            st.caption(", ".join(alerta['nombres_fuera']) if alerta['nombres_fuera'] else "Ninguno")
+                            
                     elif alerta["tipo"] == "info":
-                        nombres = ", ".join(alerta['equipos'])
-                        st.info(f"**{alerta['faena']}**\n\n🔧 En Taller:\n\n*{nombres}*")
+                        st.info(f"**{alerta['faena']}**\n\n🔧 En Taller:\n\n*Avisos: {len(alerta['equipos'])}*")
+                        with st.expander("Ver detalle"):
+                            st.markdown("🔧 **Correctivo(s):**")
+                            for eq in alerta['equipos']:
+                                st.caption(f"- {eq}")
         else:
             st.success("✅ Excelente. Todos los contratos tienen los equipos operativos requeridos y no hay equipos en correctivo.")
             
@@ -356,7 +376,8 @@ with tab_faenas:
         )
         
         if faena_seleccionada != "--- Seleccionar Faena ---":
-            # Extraer Info del contrato buscando coincidencias exactas con el nombre
+            
+            # --- PANEL DE CONTRATO (MÉTRICAS) ---
             info_contrato = None
             for nombre_planta, datos in CONTRATOS_FAENA.items():
                 if nombre_planta.lower() == faena_seleccionada.lower():
@@ -370,9 +391,10 @@ with tab_faenas:
                 col2.metric("Camiones Fábrica (Contrato)", info_contrato['Contrato'])
                 col3.metric("Equipos Back Up Requeridos", info_contrato['Back Up'])
                 st.divider()
-                
+            # ------------------------------------
+
             df_faena = df_api_global[df_api_global['nombre_faena'] == faena_seleccionada].copy()
-            st.success(f"🚜 {len(df_faena)} equipos totales reportados actualmente en **{faena_seleccionada}**")
+            st.success(f"🚜 {len(df_faena)} equipos reportados actualmente en **{faena_seleccionada}**")
             
             # Limpiar y seleccionar columnas útiles para mostrar
             cols_vista = {
@@ -386,7 +408,6 @@ with tab_faenas:
                 'dgmn_fecha_expiracion': 'Venc. DGMN'
             }
             
-            # Asegurar que existan las columnas antes de renombrar
             cols_existentes = [c for c in cols_vista.keys() if c in df_faena.columns]
             df_mostrar = df_faena[cols_existentes].rename(columns=cols_vista)
             
@@ -394,26 +415,25 @@ with tab_faenas:
             columnas_fechas = ['Venc. RT', 'Venc. SNGM', 'Venc. DGMN']
             for col in columnas_fechas:
                 if col in df_mostrar.columns:
-                    # Convertir a fecha y formatear a DD/MM/YYYY (ej: 06/12/2026)
                     df_mostrar[col] = pd.to_datetime(df_mostrar[col], errors='coerce').dt.strftime('%d/%m/%Y')
             
-            # Rellenar los valores nulos o "None" por un guión para limpiar la vista
             df_mostrar = df_mostrar.fillna("-")
             
             # ==========================================
-            # FORMATO VISUAL: Alinear al centro y ajustar ancho
+            # FORMATO VISUAL: Configuración de Columnas Nativa
             # ==========================================
-            # Identificamos qué columnas queremos centrar
-            columnas_centradas = ['Marca', 'Lugar/Ubicación', 'Horómetro (hrs)', 'Estado Actual', 'Venc. RT', 'Venc. SNGM', 'Venc. DGMN']
-            columnas_a_estilizar = [c for c in columnas_centradas if c in df_mostrar.columns]
-            
-            # Aplicamos CSS a los datos (td) y a las cabeceras (th)
-            df_estilizado = df_mostrar.style.set_properties(
-                subset=columnas_a_estilizar, 
-                **{'text-align': 'center'}
-            ).set_table_styles([
-                {'selector': 'th', 'props': [('text-align', 'center')]}
-            ])
-            
-            # Mostramos la tabla ajustando el ancho al texto y centrado
-            st.dataframe(df_estilizado, use_container_width=False, hide_index=True)
+            st.dataframe(
+                df_mostrar,
+                use_container_width=False,  # Para que se ajuste al texto
+                hide_index=True,
+                column_config={
+                    "Equipo": st.column_config.TextColumn("Equipo", alignment="left"),
+                    "Marca": st.column_config.TextColumn("Marca", alignment="center"),
+                    "Lugar/Ubicación": st.column_config.TextColumn("Lugar/Ubicación", alignment="center"),
+                    "Horómetro (hrs)": st.column_config.NumberColumn("Horómetro (hrs)", alignment="center"),
+                    "Estado Actual": st.column_config.TextColumn("Estado Actual", alignment="center"),
+                    "Venc. RT": st.column_config.TextColumn("Venc. RT", alignment="center"),
+                    "Venc. SNGM": st.column_config.TextColumn("Venc. SNGM", alignment="center"),
+                    "Venc. DGMN": st.column_config.TextColumn("Venc. DGMN", alignment="center"),
+                }
+            )
