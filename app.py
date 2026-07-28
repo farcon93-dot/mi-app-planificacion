@@ -191,9 +191,9 @@ def analizar_movimientos_semana(df_excel, fecha_str):
 st.markdown(
     """
     <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
-        <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/8/87/Enaex_logo.svg/512px-Enaex_logo.svg.png" 
-             onerror="this.onerror=null; this.src='https://www.enaex.com/wp-content/themes/enaex/assets/img/logo.svg';" 
-             width="160" style="object-fit: contain;">
+        <img src="https://www.enaex.com/wp-content/themes/enaex/assets/img/logo.svg" 
+             onerror="this.onerror=null; this.src='https://upload.wikimedia.org/wikipedia/commons/8/87/Enaex_logo.svg';" 
+             height="60" style="object-fit: contain;">
         <h1 style="margin: 0; padding: 0; font-size: 2.2rem; display: flex; align-items: center; gap: 10px;">
             🚛 Centro de Control: Flota y Auditoría
         </h1>
@@ -209,7 +209,8 @@ if not df_api_global.empty:
     cols_necesarias = [
         'rev_fecha_expiracion', 'ser_fecha_expiracion', 'dgmn_fecha_expiracion', 
         'nombre', 'nombre_faena', 'horas_ult', 'nombre_es', 
-        'marca_nombre', 'ultimo_estado', 'ultimo_lugar', 'control'
+        'marca_nombre', 'ultimo_estado', 'ultimo_lugar', 'control',
+        'patente', 'vin', 'chasis', 'modelo'
     ]
     for col in cols_necesarias:
         if col not in df_api_global.columns:
@@ -368,7 +369,7 @@ with tab_equipos:
                         nombre_real = df_api_eq.iloc[0].get('nombre', termino)
                         marca_real = df_api_eq.iloc[0].get('marca_nombre', '')
                     
-                    st.markdown(f"### 🚛 Ficha Técnica: {nombre_real} {f'({marca_real})' if marca_real else ''}")
+                    st.markdown(f"### 🚛 Ficha Técnica: {nombre_real} {f'({marca_real})' if marca_real and marca_real != '-' else ''}")
                     
                     col_sis, col_plan = st.columns(2)
                     
@@ -383,8 +384,25 @@ with tab_equipos:
                             faena = row.get('nombre_faena', 'N/A')
                             estado = row.get('Estado_Deducido', 'N/A')
                             hrs = row.get('horas_ult', 'N/A')
+                            patente = row.get('patente', 'N/A')
+                            vin = row.get('vin', row.get('chasis', 'N/A'))
+                            modelo = row.get('modelo', 'N/A')
+                            control = row.get('control', 'N/A')
                             
-                            st.info(f"**📍 Ubicación:** {ubi} ({faena})\n\n**⚙️ Estado:** {estado}\n\n**⏱️ Horómetro:** {hrs} hrs")
+                            # Limpieza rápida de fechas (quitar la hora)
+                            rt = str(row.get('rev_fecha_expiracion', '-')).split(' ')[0]
+                            sngm = str(row.get('ser_fecha_expiracion', '-')).split(' ')[0]
+                            dgmn = str(row.get('dgmn_fecha_expiracion', '-')).split(' ')[0]
+                            
+                            st.info(f"**📍 Ubicación:** {ubi} ({faena}) | **⚙️ Estado:** {estado}")
+                            
+                            c1, c2 = st.columns(2)
+                            c1.markdown(f"**Patente:** {patente}\n\n**Modelo:** {modelo}\n\n**VIN/Chasis:** {vin}")
+                            c2.markdown(f"**Horómetro:** {hrs} hrs\n\n**Control:** {control}")
+                            
+                            st.markdown("**📅 Certificaciones (Plazos):**")
+                            st.caption(f"**Revisión Técnica:** {rt} | **Sernageomin:** {sngm} | **DGMN:** {dgmn}")
+                            
                             texto_auditoria += f"GPS dice: Ubicación {ubi}, Estado {estado}.\n"
                         else:
                             st.warning("No hay conexión en vivo para este equipo.")
@@ -392,18 +410,20 @@ with tab_equipos:
                             
                     # Columna 2: PLANIFICACIÓN EXCEL
                     with col_plan:
-                        st.markdown("#### 📅 Planificación (Reuniones/Taller)")
+                        st.markdown("#### 📅 Planificación (Último Registro)")
                         if not df_excel_eq.empty:
-                            # Mostrar solo la fila más relevante (o iterar si hay varias)
-                            for _, row in df_excel_eq.head(2).iterrows():
-                                estatus = obtener_dato_seguro(row, ['Status MP', 'Estatus MP', 'Estado'])
-                                ubicacion_plan = obtener_dato_seguro(row, ['Ubicación', 'Ubicacion', 'Lugar', 'Faena'])
-                                f_ini = obtener_dato_seguro(row, ['Fecha Inici', 'Fecha Inicial'])
-                                f_fin = obtener_dato_seguro(row, ['Fecha Fina', 'Fecha Final', 'Termino'])
-                                comentarios = obtener_dato_seguro(row, ['Estado de equipos', 'Comentarios', 'Comentario', 'Motivo'])
-                                
-                                st.success(f"**📋 Estatus Taller:** {estatus} | **Ubicación:** {ubicacion_plan}\n\n**🗓️ Fechas:** {f_ini} al {f_fin}\n\n**💬 Comentarios:** {comentarios}")
-                                texto_auditoria += f"Excel dice: Estatus {estatus}, Ubicación {ubicacion_plan}, Fechas {f_ini} a {f_fin}, Detalle: {comentarios}\n"
+                            # Mostrar SOLO la primera fila (la más reciente/relevante)
+                            row = df_excel_eq.iloc[0]
+                            estatus = obtener_dato_seguro(row, ['Status MP', 'Estatus MP', 'Estado'])
+                            ubicacion_plan = obtener_dato_seguro(row, ['Ubicación', 'Ubicacion', 'Lugar', 'Faena'])
+                            f_ini = obtener_dato_seguro(row, ['Fecha Inici', 'Fecha Inicial'])
+                            f_fin = obtener_dato_seguro(row, ['Fecha Fina', 'Fecha Final', 'Termino'])
+                            comentarios = obtener_dato_seguro(row, ['Estado de equipos', 'Comentarios', 'Comentario', 'Motivo'])
+                            
+                            st.success(f"**📋 Estatus Taller:** {estatus} | **Ubicación:** {ubicacion_plan}")
+                            st.markdown(f"**🗓️ Fechas:** {f_ini} al {f_fin}\n\n**💬 Últimos Trabajos / Comentarios:**\n{comentarios}")
+                            
+                            texto_auditoria += f"Excel dice: Estatus {estatus}, Ubicación {ubicacion_plan}, Fechas {f_ini} a {f_fin}, Detalle: {comentarios}\n"
                         else:
                             st.warning("No hay registros en la planificación.")
                             texto_auditoria += "Excel: Sin registros recientes.\n"
