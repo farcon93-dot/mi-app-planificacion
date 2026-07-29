@@ -344,6 +344,13 @@ with tab_faenas:
         for faena in sorted(faenas_unicas):
             with st.expander(f"⛰️ {faena}"):
                 df_filtrado = df_api_global[df_api_global['nombre_faena'] == faena]
-                st.dataframe(df_filtrado[['nombre', 'marca_nombre', 'horas_ult', 'Estado_Deducido']].reset_index(drop=True), use_container_width=True)
+                
+                # Columnas que idealmente queremos mostrar
+                columnas_deseadas = ['nombre', 'marca_nombre', 'horas_ult', 'Estado_Deducido']
+                
+                # Filtramos solo las columnas que REALMENTE existen en los datos descargados para evitar KeyError
+                columnas_reales = [col for col in columnas_deseadas if col in df_filtrado.columns]
+                
+                st.dataframe(df_filtrado[columnas_reales].reset_index(drop=True), use_container_width=True)
     else:
         st.write("No hay datos de GPS/Faenas disponibles en este momento.")
