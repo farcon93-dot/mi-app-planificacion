@@ -54,9 +54,9 @@ CONTRATOS_FAENA = {
 # 2. MOTOR DE IA BLINDADO Y DIAGNÓSTICO
 # ==========================================
 def invocar_ia_segura(instruccion, stream=False):
-    """Prueba múltiples modelos. Si todos fallan, lanza el error exacto para diagnosticar."""
-    modelos_a_probar = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro", "gemini-1.5-pro", "gemini-1.0-pro"]
-    ultimo_error = "No se configuró la API Key de Gemini."
+    """Invoca la IA manejando explícitamente los límites de cuota."""
+    modelos_a_probar = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro"]
+    ultimo_error = "No se configuró la API Key."
     
     if not GEMINI_API_KEY or "PEGA_TU_KEY" in GEMINI_API_KEY:
         raise Exception(ultimo_error)
@@ -70,34 +70,31 @@ def invocar_ia_segura(instruccion, stream=False):
                 return modelo.generate_content(instruccion)
         except Exception as e:
             error_str = str(e).lower()
-            if "429" in error_str or "quota" in error_str:
-                raise Exception("429_QUOTA")
+            # Interceptamos el error de cuota inmediatamente
+            if "429" in error_str or "quota" in error_str or "exhausted" in error_str:
+                raise Exception("CUOTA_EXCEDIDA")
             ultimo_error = str(e)
-            continue # Intenta con el siguiente modelo en la lista
+            continue 
             
-    # Si llegó aquí, todos los modelos fallaron por algún motivo distinto a la cuota
-    raise Exception(f"Fallaron los modelos. Detalle del bloqueo: {ultimo_error}")
+    raise Exception(f"Error Técnico: {ultimo_error}")
 
 # ==========================================
 # 3. EXTRACCIÓN FLEXIBLE Y FORMATO DE FECHAS
 # ==========================================
 def buscar_dato_flexible(df_busqueda, palabras_clave):
-    """Busca aproximaciones de nombres de columnas (Fuzzy Search) para evitar valores N/A."""
+    """Busca aproximaciones de nombres de columnas (Fuzzy Search) iterando de la más nueva a la más vieja."""
     if df_busqueda is None or df_busqueda.empty:
         return "N/A"
     
-    # Nos aseguramos de tratarlo como DataFrame
     if not isinstance(df_busqueda, pd.DataFrame):
         df_busqueda = df_busqueda.to_frame().T
 
-    # MAGIA AQUÍ: Buscamos en TODAS las hojas/filas donde apareció el camión (de la más nueva a la más vieja)
     for _, fila in df_busqueda.iloc[::-1].iterrows():
         for col in fila.index:
             col_str = str(col).lower().strip()
             for palabra in palabras_clave:
                 if palabra in col_str:
                     val = fila[col]
-                    # Limpiamos basuras de pandas
                     if not pd.isna(val) and str(val).strip().lower() not in ['nan', 'nat', 'none', '']:
                         return str(val).strip()
     return "N/A"
@@ -107,14 +104,11 @@ def formatear_fecha_limpia(fecha_str):
     if pd.isna(fecha_str) or str(fecha_str).strip() in ['None', '', 'nan', 'NaT', 'N/A']: 
         return 'N/A'
     try:
-        # Intenta parsear la fecha
         return pd.to_datetime(fecha_str, dayfirst=True).strftime('%d/%m/%Y')
     except:
-        # Limpieza brutal si falla
         return str(fecha_str).split('T')[0].split(' ')[0]
 
 def fusionar_datos(api_val, exc_val):
-    """Prefiere el dato en vivo de la API, pero si no existe, usa el del Excel."""
     if api_val not in ["N/A", "None", "", "nan"] and pd.notna(api_val): return api_val
     if exc_val not in ["N/A", "None", "", "nan"] and pd.notna(exc_val): return exc_val
     return "N/A"
@@ -191,7 +185,6 @@ with st.spinner("Sincronizando Sistema Vivo y Bases de Excel..."):
     df_api_global = extraer_datos_api_paralelo()
     df_excel_global, cant_hojas = cargar_multiples_excel(ENLACES_EXCEL)
 
-# Limpieza de API básica
 if not df_api_global.empty:
     cols_necesarias = ['rev_fecha_expiracion', 'ser_fecha_expiracion', 'dgmn_fecha_expiracion', 'nombre', 'nombre_faena', 'horas_ult', 'nombre_es', 'marca_nombre', 'ultimo_estado', 'ultimo_lugar', 'control', 'patente', 'vin', 'chasis', 'modelo']
     for col in cols_necesarias:
@@ -200,7 +193,7 @@ if not df_api_global.empty:
     df_api_global['Estado_Deducido'] = df_api_global['nombre_es'].fillna(df_api_global['ultimo_estado']).fillna('OK')
     df_api_global['Lugar_Deducido'] = df_api_global['ultimo_lugar'].fillna('Faena')
 
-tab_alertas, tab_equipos, tab_faenas = st.tabs(["🚨 Alertas del Sistema", "🔍 Buscar Equipos", "📍 Ver por Faena"])
+tab_alertas, tab_equipos, tab_faenas = st.tabs(["🚨 Alertas del Sistema", "🔍 Buscar y Carta Gantt", "📍 Ver por Faena"])
 
 # ---------------------------------------------------------
 # PESTAÑA 1: ALERTAS DEL SISTEMA
@@ -211,7 +204,6 @@ with tab_alertas:
         st.warning("No se pudieron cargar los datos de la API.")
     else:
         st.subheader("⚖️ Estado de Cumplimiento de Contratos (Camiones Fábrica)")
-        # ... (Manteniendo la lógica original de contratos de Enaex que funcionaba bien)
         alertas_contrato_rojas = []
         alertas_contrato_amarillas = []
         alertas_correctivas = []
@@ -258,12 +250,58 @@ with tab_alertas:
             st.success("✅ Excelente. Todos los contratos tienen los equipos operativos requeridos.")
 
 # ---------------------------------------------------------
-# PESTAÑA 2: BÚSQUEDA Y AUDITORÍA DE EQUIPOS
+# PESTAÑA 2: CARTA GANTT Y BÚSQUEDA DE EQUIPOS
 # ---------------------------------------------------------
 with tab_equipos:
-    st.header("🔍 Búsqueda y Estado de Equipos")
-    st.caption("Ingresa uno o varios equipos separados por coma (Ej: Quadra-1060, Auger-165):")
-    equipo_a_buscar = st.text_input("Buscar:", label_visibility="collapsed")
+    st.header("📅 Planificación de la Semana (Carta Gantt)")
+    with st.expander("Ver Resumen de Subidas y Bajadas", expanded=False):
+        st.write("Cálculo automático de movimientos basados en las fechas del Excel para los próximos 7 días.")
+        if st.button("Generar Resumen Semanal"):
+            hoy = pd.Timestamp.now().normalize()
+            fin_semana = hoy + pd.Timedelta(days=7)
+            bajadas = []
+            subidas = []
+            
+            if not df_excel_global.empty:
+                for _, row in df_excel_global.iterrows():
+                    equipo = buscar_dato_flexible(row, ['equipo', 'nombre'])
+                    if equipo == "N/A": continue
+                    
+                    f_ini_str = buscar_dato_flexible(row, ['inici', 'bajada', 'ingreso'])
+                    f_fin_str = buscar_dato_flexible(row, ['fina', 'subida', 'entrega'])
+                    
+                    try:
+                        if f_ini_str != "N/A":
+                            f_ini = pd.to_datetime(f_ini_str, dayfirst=True)
+                            if hoy <= f_ini <= fin_semana:
+                                bajadas.append(f"{equipo} ({f_ini.strftime('%d/%m')})")
+                    except: pass
+                    
+                    try:
+                        if f_fin_str != "N/A":
+                            f_fin = pd.to_datetime(f_fin_str, dayfirst=True)
+                            if hoy <= f_fin <= fin_semana:
+                                subidas.append(f"{equipo} ({f_fin.strftime('%d/%m')})")
+                    except: pass
+            
+            col_g1, col_g2 = st.columns(2)
+            with col_g1:
+                st.warning(f"📉 **Bajan a Taller (Próximos 7 días):**\n\n" + ("\n".join([f"- {x}" for x in set(bajadas)]) if bajadas else "Ninguno planificado."))
+            with col_g2:
+                st.success(f"📈 **Suben a Faena (Próximos 7 días):**\n\n" + ("\n".join([f"- {x}" for x in set(subidas)]) if subidas else "Ninguno planificado."))
+                
+            # Comentario IA (Si hay cuota)
+            try:
+                prompt_semana = f"Resumen logístico: Bajan a taller: {', '.join(set(bajadas))}. Suben a faena: {', '.join(set(subidas))}. Escribe un mensaje breve de ánimo al equipo de Enaex para esta semana."
+                respuesta = invocar_ia_segura(prompt_semana, stream=False)
+                st.info(f"🤖 **Comentario IA:** {respuesta.text}")
+            except Exception as e:
+                if "CUOTA_EXCEDIDA" in str(e):
+                    st.caption("*(Nota: Comentario de IA omitido por límite de consultas gratuitas. El resumen de fechas superior es preciso).*")
+
+    st.markdown("---")
+    st.header("🔍 Búsqueda y Auditoría Individual")
+    equipo_a_buscar = st.text_input("Ingresa uno o varios equipos (Ej: Quadra-1060, Auger-165):")
 
     if st.button("Consultar Estado"):
         if not equipo_a_buscar:
@@ -273,20 +311,19 @@ with tab_equipos:
             fichas_generadas = [] 
             
             for termino in terminos:
-                # 1. Búsqueda en DataFrames
                 df_api_eq = pd.DataFrame()
                 if not df_api_global.empty:
                     df_api_eq = df_api_global[df_api_global['nombre'].astype(str).str.upper().str.contains(termino, na=False)]
                 
                 df_excel_eq = pd.DataFrame()
                 if not df_excel_global.empty:
+                    # Filtramos todas las filas donde aparezca el equipo
                     df_excel_eq = df_excel_global[df_excel_global.astype(str).apply(lambda x: x.str.upper().str.contains(termino)).any(axis=1)]
                 
                 if df_api_eq.empty and df_excel_eq.empty:
                     st.error(f"❌ No se encontró coincidencia en API ni en Excel para: **{termino}**")
                     continue
                 
-                # 2. Extracción de variables API
                 row_api = df_api_eq.iloc[0] if not df_api_eq.empty else None
                 nombre_real = row_api.get('nombre', termino) if row_api is not None else termino
                 ubi_api = str(row_api.get('Lugar_Deducido', 'N/A')) if row_api is not None else "N/A"
@@ -298,7 +335,7 @@ with tab_equipos:
                 sngm_api = formatear_fecha_limpia(row_api.get('ser_fecha_expiracion')) if row_api is not None else "N/A"
                 dgmn_api = formatear_fecha_limpia(row_api.get('dgmn_fecha_expiracion')) if row_api is not None else "N/A"
                 
-                # 3. Extracción Inteligente (Fuzzy) de Excel
+                # Extracción Inteligente en todas las filas del Excel
                 ex_patente = buscar_dato_flexible(df_excel_eq, ['patente', 'placa', 'ppu'])
                 ex_vin = buscar_dato_flexible(df_excel_eq, ['vin', 'chasis', 'serie'])
                 ex_marca = buscar_dato_flexible(df_excel_eq, ['marca'])
@@ -309,16 +346,14 @@ with tab_equipos:
                 ubicacion_plan = buscar_dato_flexible(df_excel_eq, ['ubicación', 'lugar', 'taller'])
                 comentarios = buscar_dato_flexible(df_excel_eq, ['comentario', 'trabajos', 'motivo'])
                 
-                f_ini = formatear_fecha_limpia(buscar_dato_flexible(df_excel_eq, ['fecha inici', 'inicio planificado', 'fecha bajada']))
-                f_fin = formatear_fecha_limpia(buscar_dato_flexible(df_excel_eq, ['fecha fina', 'fin planificado', 'fecha entrega', 'fecha subida']))
+                f_ini = formatear_fecha_limpia(buscar_dato_flexible(df_excel_eq, ['inici', 'bajada', 'inicio planificado']))
+                f_fin = formatear_fecha_limpia(buscar_dato_flexible(df_excel_eq, ['fina', 'subida', 'fin planificado', 'fecha entrega']))
                 
-                # 4. Fusión Definitiva (Privilegia API, rellena con Excel)
                 patente = fusionar_datos(str(row_api.get('patente', 'N/A')) if row_api is not None else "N/A", ex_patente)
                 vin = fusionar_datos(str(row_api.get('vin', 'N/A')) if row_api is not None else str(row_api.get('chasis', 'N/A')) if row_api is not None else "N/A", ex_vin)
                 marca_modelo = fusionar_datos(str(row_api.get('marca_nombre', 'N/A')) if row_api is not None else "N/A", f"{ex_marca} {ex_modelo}".strip())
                 control = fusionar_datos(str(row_api.get('control', 'N/A')) if row_api is not None else "N/A", ex_control)
 
-                # 5. Renderizado Ficha Técnica
                 with st.container():
                     st.markdown(f"### 🚛 Ficha Técnica: {nombre_real}")
                     col_sis, col_plan = st.columns(2)
@@ -353,21 +388,19 @@ with tab_equipos:
                             
                     st.divider()
                     
-                    # Guardamos la info para la IA
-                    texto_auditoria = f"Equipo {nombre_real}. En Vivo dice: Ubicación {ubi_api}, Estado {estado_api}. Excel dice: Estatus {estatus}, Ubicación {ubicacion_plan}, Bajada {f_ini}, Subida {f_fin}, Trabajos {comentarios}."
+                    texto_auditoria = f"Equipo {nombre_real}. API: Ubicación {ubi_api}, Estado {estado_api}. Excel: Estatus {estatus}, Ubicación {ubicacion_plan}, Bajada {f_ini}, Subida {f_fin}, Trabajos {comentarios}."
                     fichas_generadas.append(texto_auditoria)
 
-            # --- AUDITORÍA IA ---
             if fichas_generadas:
                 st.markdown("### 🤖 Auditoría Automática (Buscando Incongruencias)")
                 st.caption("La IA cruza la información mostrada arriba para alertar sobre desvíos.")
                 
                 prompt_auditor = f"""
                 Eres un auditor de mantenimiento. Revisa estos datos crudos.
-                Busca incongruencias entre "En Vivo" y "Excel" (ej: En vivo dice operando, pero Excel dice en taller).
-                Si las fechas del Excel muestran atraso al día de hoy ({datetime.now(timezone.utc).strftime('%d/%m/%Y')}), menciónalo.
-                Si todo cuadra, responde: "✅ Todo coincide correctamente. Sin incongruencias detectadas."
-                Sé muy directo, máximo 2 líneas por equipo.
+                Busca incongruencias entre API y Excel (ej: API dice operando, pero Excel dice en taller).
+                Si las fechas muestran atraso al día de hoy, menciónalo.
+                Si todo cuadra, responde: "✅ Todo coincide correctamente."
+                Sé directo, máximo 2 líneas por equipo.
                 DATOS A AUDITAR: {chr(10).join(fichas_generadas)}
                 """
                 
@@ -376,11 +409,10 @@ with tab_equipos:
                     st.write_stream((chunk.text for chunk in respuesta_stream if chunk.text))
                 except Exception as e:
                     error_msg = str(e)
-                    if "429_QUOTA" in error_msg:
-                        st.warning("⚠️ **Límite de IA diario agotado.** Has superado la cuota gratuita de consultas de Google por hoy. Tus datos crudos se cargaron con éxito arriba.")
+                    if "CUOTA_EXCEDIDA" in error_msg:
+                        st.warning("⚠️ **Límite gratuito de IA alcanzado.** Por favor espera unos minutos antes de volver a consultar a la Inteligencia Artificial. ¡Tus fichas técnicas superiores siguen operativas!")
                     else:
-                        # ESTO IMPRIMIRÁ EL ERROR REAL SI HAY BLOQUEO DE RED O LLAVE INVÁLIDA
-                        st.error(f"❌ **Error Técnico de IA:** {error_msg}")
+                        st.error(f"❌ **Fallo de Conexión IA:** {error_msg}")
 
 # ---------------------------------------------------------
 # PESTAÑA 3: VISTA POR FAENA
