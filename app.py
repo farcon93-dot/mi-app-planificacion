@@ -3,6 +3,7 @@ import pandas as pd
 import google.generativeai as genai
 import concurrent.futures
 import requests
+import datetime
 
 st.set_page_config(page_title="Control Flota Enaex", layout="wide", page_icon="🚛")
 
@@ -30,7 +31,7 @@ CAPACIDAD_TALLERES = {
     "FULL RPM": 4
 }
 
-MODELOS_SEGUROS = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro']
+MODELOS_SEGUROS = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro', 'gemini-pro']
 
 @st.cache_resource
 def configurar_ia(api_key):
@@ -60,11 +61,12 @@ def cargar_excels(urls):
             if "/d/" in url:
                 id_archivo = url.split('/d/')[1].split('/')[0]
                 url_descarga = f"https://drive.google.com/uc?export=download&id={id_archivo}"
+                # Lee TODAS las hojas del excel
                 dict_hojas = pd.read_excel(url_descarga, sheet_name=None)
                 for nombre_hoja, df_hoja in dict_hojas.items():
                     df_hoja['Origen_Hoja'] = nombre_hoja
                     df_maestro = pd.concat([df_maestro, df_hoja], ignore_index=True)
-        except Exception: 
+        except Exception as e:
             pass
     return df_maestro
 
@@ -91,17 +93,18 @@ def extraer_api():
     return pd.DataFrame(datos)
 
 def buscar_dato_flexible(df_equipo, palabras_clave):
-    """Busca en todas las filas donde aparece el camión para evitar N/A si el dato está en otra hoja."""
+    """Busca en TODAS las filas donde aparece el camión para armar el puzzle, leyendo de abajo hacia arriba."""
     if df_equipo is None or df_equipo.empty: 
         return "N/A"
     
-    # Recorremos el dataframe desde la última fila hacia arriba
+    # Recorremos el dataframe desde la última fila hacia arriba (la data más fresca suele estar al final)
     for index, row in df_equipo.iloc[::-1].iterrows():
         for col in df_equipo.columns:
             col_str = str(col).lower().strip()
             for palabra in palabras_clave:
                 if palabra in col_str:
                     valor = row[col]
+                    # Validar que no sea NaN o texto vacío
                     if pd.notna(valor) and str(valor).strip().lower() not in ['nan', 'nat', 'none', '']:
                         return str(valor).strip()
     return "N/A"
@@ -137,24 +140,41 @@ tab_alertas, tab_equipos, tab_movimientos, tab_faenas = st.tabs([
 
 with tab_alertas:
     st.header("🚨 Estado de Cumplimiento de Contratos")
-    st.info("Sistema de cuadrículas de contratos (Mantenido según lógica original)")
+    if not df_api_global.empty and 'nombre_faena' in df_api_global.columns:
+        resumen_faenas = df_api_global.groupby('nombre_faena').size().reset_index(name='Total_Equipos')
+        cols = st.columns(3)
+        for idx, row in resumen_faenas.iterrows():
+            with cols[idx % 3]:
+                st.info(f"**Faena:** {row['nombre_faena']}\n\n**Equipos Operativos:** {row['Total_Equipos']}")
+    else:
+        st.warning("No se encontraron datos en la API para mostrar alertas.")
 
 with tab_equipos:
     st.header("🔍 Búsqueda y Auditoría Individual")
+    st.write("Busca información consolidada de Hardware, GPS y Planificación.")
     equipos_input = st.text_input("Ingresa el nombre o código del equipo (Ej: Quadra-70, Auger-165):")
     
     if st.button("Consultar Ficha Técnica") and equipos_input:
         nombres = [eq.strip().upper() for eq in equipos_input.split(",") if eq.strip()]
         
         for nombre in nombres:
-            # Filtrar DataFrame de Excel (Buscar en TODAS las filas donde aparece el camión)
-            df_historial_equipo = df_excel_global[df_excel_global.astype(str).apply(lambda x: x.str.upper().str.contains(nombre)).any(axis=1)]
+            # 1. Filtrar DataFrame de Excel (Buscar en TODAS las filas donde aparece el camión)
+            if not df_excel_global.empty:
+                df_historial_equipo = df_excel_global[df_excel_global.astype(str).apply(lambda x: x.str.upper().str.contains(nombre)).any(axis=1)]
+            else:
+                df_historial_equipo = pd.DataFrame()
+
+            # 2. Filtrar DataFrame de API
+            if not df_api_global.empty and 'nombre' in df_api_global.columns:
+                df_api_equipo = df_api_global[df_api_global['nombre'].str.upper().str.contains(nombre, na=False)]
+            else:
+                df_api_equipo = pd.DataFrame()
             
-            if df_historial_equipo.empty:
-                st.error(f"❌ No se encontró '{nombre}' en la base de datos Excel.")
+            if df_historial_equipo.empty and df_api_equipo.empty:
+                st.error(f"❌ No se encontró '{nombre}' ni en Excel ni en API.")
                 continue
                 
-            # Extracción Fuerte (Busca en cualquier hoja que tenga el dato)
+            # --- EXTRACCIÓN FUERTE (Cruza todas las pestañas) ---
             patente = buscar_dato_flexible(df_historial_equipo, ['patente', 'placa', 'ppu'])
             vin = buscar_dato_flexible(df_historial_equipo, ['vin', 'chasis', 'serie'])
             marca = buscar_dato_flexible(df_historial_equipo, ['marca'])
@@ -162,21 +182,27 @@ with tab_equipos:
             capacidad = buscar_dato_flexible(df_historial_equipo, ['capacidad', 'tonelaje', 'tons'])
             control = buscar_dato_flexible(df_historial_equipo, ['control', 'sistema'])
             
-            # Datos variables (Buscamos preferentemente en la última fila/hoja de planificación)
-            ultima_fila = df_historial_equipo.iloc[[-1]]
+            # Buscamos estatus y ubicación preferentemente en la última fila/hoja de planificación
+            ultima_fila = df_historial_equipo.iloc[[-1]] if not df_historial_equipo.empty else pd.DataFrame()
             estatus_taller = buscar_dato_flexible(ultima_fila, ['estatus mp', 'status', 'estado'])
             ubicacion_taller = buscar_dato_flexible(ultima_fila, ['ubicación', 'taller', 'lugar'])
             comentarios = buscar_dato_flexible(ultima_fila, ['motivo', 'comentario', 'trabajos', 'estado de equipos'])
             
-            fecha_inicio = formatear_fecha(buscar_dato_flexible(ultima_fila, ['fecha inicio', 'inicio planificado', 'inici']))
-            fecha_entrega = formatear_fecha(buscar_dato_flexible(ultima_fila, ['fecha entrega', 'fin planificado', 'fina']))
+            fecha_inicio = formatear_fecha(buscar_dato_flexible(ultima_fila, ['fecha inicio', 'inicio planificado', 'inici', 'bajada']))
+            fecha_entrega = formatear_fecha(buscar_dato_flexible(ultima_fila, ['fecha entrega', 'fin planificado', 'fina', 'subida']))
 
+            # Datos GPS
+            ubicacion_gps = df_api_equipo['nombre_faena'].iloc[0] if not df_api_equipo.empty and 'nombre_faena' in df_api_equipo.columns else "No reporta GPS"
+            estado_gps = df_api_equipo['Estado_Deducido'].iloc[0] if not df_api_equipo.empty and 'Estado_Deducido' in df_api_equipo.columns else "N/A"
+            horometro = df_api_equipo['horas_ult'].iloc[0] if not df_api_equipo.empty and 'horas_ult' in df_api_equipo.columns else "N/A"
+
+            # --- RENDERIZADO VISUAL ---
             st.markdown(f"### 🚛 Ficha Técnica: {nombre}")
             col1, col2 = st.columns(2)
             
             with col1:
                 st.markdown("#### 📡 Hardware e Identificación")
-                st.info(f"📍 **Datos del Sistema Vivo (GPS / API se conectan aquí si existen)**")
+                st.info(f"📍 **Ubicación API:** {ubicacion_gps} | ⚙️ **Estado:** {estado_gps}")
                 
                 c1, c2 = st.columns(2)
                 c1.markdown(f"**Patente:** {patente}")
@@ -185,14 +211,15 @@ with tab_equipos:
                 
                 c2.markdown(f"**Capacidad:** {capacidad}")
                 c2.markdown(f"**Control:** {control}")
+                c2.markdown(f"**Horómetro:** {horometro}")
                 
-                st.markdown("**🗓️ Certificaciones:** (Revisión Técnica / Sernageomin / DGMN)")
+                st.markdown("**🗓️ Certificaciones:** (Revisión Técnica / Sernageomin / DGMN) -> Buscando en matriz...")
 
             with col2:
                 st.markdown("#### 🗓️ Planificación de Mantenimiento")
                 st.success(f"📋 **Estatus:** {estatus_taller} | **Ubicación:** {ubicacion_taller}")
                 
-                st.markdown(f"**🗓️ Fechas de Planificación:**")
+                st.markdown(f"**🗓️ Fechas de Planificación (Excel):**")
                 st.markdown(f"- **Bajada a Taller (Inicio):** {fecha_inicio}")
                 st.markdown(f"- **Subida a Faena (Entrega):** {fecha_entrega}")
                 st.markdown(f"💬 **Trabajos / Motivo:** {comentarios}")
@@ -201,16 +228,18 @@ with tab_equipos:
             if modelo_ia:
                 with st.expander("🤖 Auditoría Automática (Buscando Incongruencias)"):
                     try:
-                        prompt = f"Analiza en 2 líneas. El equipo {nombre} tiene fecha de inicio {fecha_inicio} y entrega {fecha_entrega}, estatus {estatus_taller}, ubicado en {ubicacion_taller}. ¿Todo se ve normal?"
+                        prompt = f"Analiza en 2 líneas. El equipo {nombre} tiene fecha de inicio {fecha_inicio} y entrega {fecha_entrega}, estatus {estatus_taller}, ubicado en {ubicacion_taller}. Según GPS está en {ubicacion_gps}. ¿Todo se ve normal?"
                         respuesta = modelo_ia.generate_content(prompt)
                         st.write(respuesta.text)
                     except Exception as e:
-                        st.warning("⚠️ Límite de IA gratuito alcanzado. Por favor, genera una nueva Key en Google AI Studio si esto persiste. Tus Fichas Técnicas seguirán funcionando perfectamente.")
+                        st.warning("⚠️ Límite de cuota IA alcanzado. Tu ficha técnica funciona perfectamente, pero la IA necesita que renueves la API Key o esperes unos minutos.")
+            else:
+                st.warning("IA no configurada o API Key inválida.")
             st.divider()
 
 with tab_movimientos:
     st.header("📅 Control de Subidas, Bajadas y Capacidad")
-    st.write("Análisis logístico automático de la semana, basado en las planillas de Excel.")
+    st.write("Análisis logístico de la semana según el Excel. (Sin consumo de IA para mayor velocidad)")
     
     if st.button("Calcular Semana Logística"):
         if df_excel_global.empty:
@@ -250,14 +279,14 @@ with tab_movimientos:
                     if f_inicio_str != "N/A":
                         f_ini = pd.to_datetime(f_inicio_str, dayfirst=True)
                         if hoy <= f_ini <= fin_semana:
-                            bajadas.append(f"🔧 **{equipo}** ➔ Baja a taller: **{taller_raw}** ({f_ini.strftime('%d/%m')})")
+                            bajadas.append(f"🔧 **{equipo}** ➔ Baja al Taller: **{taller_raw}** ({f_ini.strftime('%d/%m')})")
                 except: pass
                 
                 try:
                     if f_entrega_str != "N/A":
                         f_fin = pd.to_datetime(f_entrega_str, dayfirst=True)
                         if hoy <= f_fin <= fin_semana:
-                            subidas.append(f"📈 **{equipo}** ➔ Sube a faena: **{faena}** ({f_fin.strftime('%d/%m')})")
+                            subidas.append(f"📈 **{equipo}** ➔ Sube a la Faena: **{faena}** ({f_fin.strftime('%d/%m')})")
                 except: pass
 
                 # --- CALCULAR CAPACIDAD DE TALLERES (ESTATUS ACTUAL) ---
@@ -294,7 +323,7 @@ with tab_movimientos:
                     st.info("No hay subidas programadas esta semana.")
 
             st.divider()
-            st.subheader("⚖️ Estado de Capacidad por Taller")
+            st.subheader("⚖️ Estado de Capacidad por Taller (Ocupados / Máximo)")
             
             cols_talleres = st.columns(3)
             for i, (nombre_taller, limite) in enumerate(CAPACIDAD_TALLERES.items()):
@@ -310,4 +339,11 @@ with tab_movimientos:
 
 with tab_faenas:
     st.header("📍 Vista Global de Faenas")
-    st.write("*(Mantenido según lógica original)*")
+    if not df_api_global.empty and 'nombre_faena' in df_api_global.columns:
+        faenas_unicas = df_api_global['nombre_faena'].dropna().unique()
+        for faena in sorted(faenas_unicas):
+            with st.expander(f"⛰️ {faena}"):
+                df_filtrado = df_api_global[df_api_global['nombre_faena'] == faena]
+                st.dataframe(df_filtrado[['nombre', 'marca_nombre', 'horas_ult', 'Estado_Deducido']].reset_index(drop=True), use_container_width=True)
+    else:
+        st.write("No hay datos de GPS/Faenas disponibles en este momento.")
