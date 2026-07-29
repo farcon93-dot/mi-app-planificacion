@@ -55,7 +55,7 @@ CONTRATOS_FAENA = {
 # ==========================================
 def invocar_ia_segura(instruccion, stream=False):
     """Prueba múltiples modelos. Si todos fallan, lanza el error exacto para diagnosticar."""
-    modelos_a_probar = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro"]
+    modelos_a_probar = ["gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-pro", "gemini-1.5-pro", "gemini-1.0-pro"]
     ultimo_error = "No se configuró la API Key de Gemini."
     
     if not GEMINI_API_KEY or "PEGA_TU_KEY" in GEMINI_API_KEY:
@@ -86,21 +86,20 @@ def buscar_dato_flexible(df_busqueda, palabras_clave):
     if df_busqueda is None or df_busqueda.empty:
         return "N/A"
     
-    # Nos quedamos solo con la última fila registrada del equipo
-    if isinstance(df_busqueda, pd.DataFrame):
-        fila = df_busqueda.iloc[-1]
-    else:
-        fila = df_busqueda
+    # Nos aseguramos de tratarlo como DataFrame
+    if not isinstance(df_busqueda, pd.DataFrame):
+        df_busqueda = df_busqueda.to_frame().T
 
-    for col in fila.index:
-        col_str = str(col).lower().strip()
-        for palabra in palabras_clave:
-            if palabra in col_str:
-                val = fila[col]
-                # Limpiamos basuras de pandas
-                if pd.isna(val) or str(val).strip().lower() in ['nan', 'nat', 'none', '']:
-                    return "N/A"
-                return str(val).strip()
+    # MAGIA AQUÍ: Buscamos en TODAS las hojas/filas donde apareció el camión (de la más nueva a la más vieja)
+    for _, fila in df_busqueda.iloc[::-1].iterrows():
+        for col in fila.index:
+            col_str = str(col).lower().strip()
+            for palabra in palabras_clave:
+                if palabra in col_str:
+                    val = fila[col]
+                    # Limpiamos basuras de pandas
+                    if not pd.isna(val) and str(val).strip().lower() not in ['nan', 'nat', 'none', '']:
+                        return str(val).strip()
     return "N/A"
 
 def formatear_fecha_limpia(fecha_str):
